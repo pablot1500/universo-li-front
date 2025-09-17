@@ -133,7 +133,9 @@ const ComponentsPage = () => {
     try {
       const res = await fetch(`${apiBase}/components/${componentToDelete.id}`, { method: 'DELETE' });
       if (res.ok) {
-        await fetchComponents();
+        setComponents(prev => prev.filter(c => c.id !== componentToDelete.id));
+        // refrescar en segundo plano para mantener consistencia con backend
+        fetchComponents().catch(console.error);
         setConfirmOpen(false);
         setComponentToDelete(null);
       } else {
@@ -493,7 +495,9 @@ const ComponentsPage = () => {
                     body: JSON.stringify(componentData)
                   });
                   if (res.ok) {
-                    await fetchComponents();
+                    const updated = await res.json().catch(() => null);
+                    setComponents(prev => prev.map(c => c.id === selectedComponent.id ? { ...c, ...(updated || componentData), id: selectedComponent.id } : c));
+                    fetchComponents().catch(console.error);
                     setShowModal(false);
                   } else {
                     console.error('Error al actualizar el componente');
@@ -505,7 +509,9 @@ const ComponentsPage = () => {
                     body: JSON.stringify(componentData)
                   });
                   if (res.ok) {
-                    await fetchComponents();
+                    const created = await res.json().catch(() => null);
+                    setComponents(prev => [...prev, { ...(created || componentData) }]);
+                    fetchComponents().catch(console.error);
                     setShowModal(false);
                   } else {
                     console.error('Error al agregar el componente');
