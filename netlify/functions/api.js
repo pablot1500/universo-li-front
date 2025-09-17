@@ -72,7 +72,8 @@ export async function handler(event) {
     const collection = (qCollection || aliasCollection || 'products');
     const resourceId = url.searchParams.get('id') || pathSegments[1] || null;
 
-    const limit = Number(url.searchParams.get('limit') || 200);
+    const limitParam = url.searchParams.get('limit');
+    const limit = Number(limitParam);
     let payload = null;
     try {
       payload = decodeBody(event);
@@ -102,7 +103,7 @@ export async function handler(event) {
         query = query.filter('data->>category', 'eq', url.searchParams.get('category'));
       }
 
-      if (Number.isFinite(limit) && limit > 0) {
+      if (limitParam && Number.isFinite(limit) && limit > 0) {
         query = query.limit(limit);
       }
 
