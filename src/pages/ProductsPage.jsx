@@ -268,7 +268,7 @@ const ProductsPage = () => {
   const scrollTopButtonStyle = {
     ...fabStyle,
     bottom: '90px',
-    backgroundColor: '#4caf50'
+    transition: 'opacity 0.25s ease, transform 0.25s ease'
   };
 
   const handleOpenAdd = () => {
@@ -1462,19 +1462,22 @@ const ProductsPage = () => {
           </div>
         </>
       )}
-      {showScrollTop && (
-        <button
-          style={scrollTopButtonStyle}
-          onClick={() => {
-            if (typeof window !== 'undefined') {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }}
-          title="Volver arriba"
-        >
-          ↑
-        </button>
-      )}
+      <button
+        style={{
+          ...scrollTopButtonStyle,
+          pointerEvents: showScrollTop ? 'auto' : 'none',
+          opacity: showScrollTop ? 1 : 0,
+          transform: showScrollTop ? 'translateY(0)' : 'translateY(12px)'
+        }}
+        onClick={() => {
+          if (typeof window !== 'undefined') {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        }}
+        title="Volver arriba"
+      >
+        ↑
+      </button>
       <button style={fabStyle} onClick={handleOpenAdd}>+</button>
 
       {/* Popup selector de componentes/telas */}

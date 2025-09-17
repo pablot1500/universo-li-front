@@ -143,7 +143,8 @@ const ComponentsPage = () => {
   const scrollTopButtonStyle = {
     ...fabStyle,
     bottom: '160px',
-    backgroundColor: '#4caf50'
+    backgroundColor: 'rgba(0,153,255,0.7)',
+    transition: 'opacity 0.25s ease, transform 0.25s ease'
   };
 
   const handleEditComponent = (component) => {
@@ -587,19 +588,22 @@ const ComponentsPage = () => {
         +
       </button>
 
-      {showScrollTop && (
-        <button
-          style={{ ...scrollTopButtonStyle }}
-          onClick={() => {
-            if (typeof window !== 'undefined') {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }}
-          title="Volver arriba"
-        >
-          ↑
-        </button>
-      )}
+      <button
+        style={{
+          ...scrollTopButtonStyle,
+          pointerEvents: showScrollTop ? 'auto' : 'none',
+          opacity: showScrollTop ? 1 : 0,
+          transform: showScrollTop ? 'translateY(0)' : 'translateY(12px)'
+        }}
+        onClick={() => {
+          if (typeof window !== 'undefined') {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        }}
+        title="Volver arriba"
+      >
+        ↑
+      </button>
 
       {/* Confirmación de borrado de componente */}
       {confirmOpen && (
