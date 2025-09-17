@@ -12,6 +12,7 @@ const ProductsPage = () => {
   const [detailProduct, setDetailProduct] = useState(null);
   const [showProductComments, setShowProductComments] = useState(false);
   const [productComment, setProductComment] = useState('');
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   // Listas de componentes disponibles para dropdowns
   const [telaComponents, setTelaComponents] = useState([]);
@@ -95,6 +96,20 @@ const ProductsPage = () => {
     };
     fetchTelas();
     fetchOtros();
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => {
+      try {
+        const y = typeof window !== 'undefined' ? window.scrollY : 0;
+        setShowScrollTop(y > 320);
+      } catch {
+        setShowScrollTop(false);
+      }
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll);
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
@@ -249,6 +264,11 @@ const ProductsPage = () => {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+  };
+  const scrollTopButtonStyle = {
+    ...fabStyle,
+    bottom: '90px',
+    backgroundColor: '#4caf50'
   };
 
   const handleOpenAdd = () => {
@@ -1441,6 +1461,19 @@ const ProductsPage = () => {
             </div>
           </div>
         </>
+      )}
+      {showScrollTop && (
+        <button
+          style={scrollTopButtonStyle}
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }}
+          title="Volver arriba"
+        >
+          ↑
+        </button>
       )}
       <button style={fabStyle} onClick={handleOpenAdd}>+</button>
 

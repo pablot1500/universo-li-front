@@ -19,6 +19,7 @@ const ComponentsPage = () => {
   const [results, setResults] = useState([]);
   const [showResultsPopup, setShowResultsPopup] = useState(false);
   const [resultsClosing, setResultsClosing] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const [bulkCategory, setBulkCategory] = useState(null); // categoría activa en actualización
   // Progreso detallado de actualización en masa
   const [progressItems, setProgressItems] = useState([]); // {id, name, category, status, oldPrice, newPrice, error}
@@ -60,6 +61,20 @@ const ComponentsPage = () => {
 
   useEffect(() => {
     fetchComponents();
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => {
+      try {
+        const y = typeof window !== 'undefined' ? window.scrollY : 0;
+        setShowScrollTop(y > 320);
+      } catch {
+        setShowScrollTop(false);
+      }
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll);
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   const toggleLinkVisibility = (id) => {
@@ -123,6 +138,12 @@ const ComponentsPage = () => {
     ...fabStyle,
     bottom: '90px',
     fontSize: '36px'
+  };
+
+  const scrollTopButtonStyle = {
+    ...fabStyle,
+    bottom: '160px',
+    backgroundColor: '#4caf50'
   };
 
   const handleEditComponent = (component) => {
@@ -565,6 +586,20 @@ const ComponentsPage = () => {
       >
         +
       </button>
+
+      {showScrollTop && (
+        <button
+          style={{ ...scrollTopButtonStyle }}
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }}
+          title="Volver arriba"
+        >
+          ↑
+        </button>
+      )}
 
       {/* Confirmación de borrado de componente */}
       {confirmOpen && (
