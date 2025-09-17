@@ -6,7 +6,8 @@ const defaultHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Cache-Control': 'no-store, max-age=0, must-revalidate'
+  'Cache-Control': 'no-store, max-age=0, must-revalidate',
+  'Netlify-CDN-Cache-Control': 'no-store'
 };
 
 const jsonResponse = (statusCode, payload) => ({
