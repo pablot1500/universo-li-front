@@ -33,7 +33,9 @@ export async function handler(event) {
       categoria: 'categories'
     };
 
-    const pathCollection = path.split('/').filter(Boolean)[0];
+    const pathSegments = path.split('/').filter(Boolean);
+    if (pathSegments[0] === 'api') pathSegments.shift();
+    const pathCollection = pathSegments[0];
     const aliasCollection = pathCollection ? (aliasMap[pathCollection] || pathCollection) : null;
     const collection = qCollection || aliasCollection || 'products';
 
