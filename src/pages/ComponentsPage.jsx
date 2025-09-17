@@ -30,6 +30,8 @@ const ComponentsPage = () => {
   const apiBase = origin ? `${origin}/api` : '/api';
   const scraperEndpoint = `${apiBase}/precio-casanacho`;
 
+  const refreshTimeoutRef = React.useRef(null);
+
   const fetchComponents = async () => {
     try {
       const res = await fetch(`${apiBase}/components`);
@@ -43,6 +45,18 @@ const ComponentsPage = () => {
       console.error('Error fetching components:', error);
     }
   };
+
+  const scheduleComponentsRefresh = (delay = 12000) => {
+    if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+    refreshTimeoutRef.current = setTimeout(() => {
+      fetchComponents().catch(console.error);
+      refreshTimeoutRef.current = null;
+    }, delay);
+  };
+
+  useEffect(() => () => {
+    if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     fetchComponents();
@@ -134,8 +148,7 @@ const ComponentsPage = () => {
       const res = await fetch(`${apiBase}/components/${componentToDelete.id}`, { method: 'DELETE' });
       if (res.ok) {
         setComponents(prev => prev.filter(c => c.id !== componentToDelete.id));
-        // refrescar en segundo plano para mantener consistencia con backend
-        fetchComponents().catch(console.error);
+        scheduleComponentsRefresh();
         setConfirmOpen(false);
         setComponentToDelete(null);
       } else {
@@ -497,7 +510,7 @@ const ComponentsPage = () => {
                   if (res.ok) {
                     const updated = await res.json().catch(() => null);
                     setComponents(prev => prev.map(c => c.id === selectedComponent.id ? { ...c, ...(updated || componentData), id: selectedComponent.id } : c));
-                    fetchComponents().catch(console.error);
+                    scheduleComponentsRefresh();
                     setShowModal(false);
                   } else {
                     console.error('Error al actualizar el componente');
@@ -510,8 +523,12 @@ const ComponentsPage = () => {
                   });
                   if (res.ok) {
                     const created = await res.json().catch(() => null);
-                    setComponents(prev => [...prev, { ...(created || componentData) }]);
-                    fetchComponents().catch(console.error);
+                    setComponents(prev => {
+                      const next = prev.filter(c => c.id !== (created?.id ?? null));
+                      const record = { ...(created || componentData) };
+                      return [...next, record];
+                    });
+                    scheduleComponentsRefresh();
                     setShowModal(false);
                   } else {
                     console.error('Error al agregar el componente');
