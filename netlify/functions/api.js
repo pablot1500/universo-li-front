@@ -25,7 +25,17 @@ export async function handler(event) {
     const url = new URL(event.rawUrl);
     const qCollection = url.searchParams.get('collection');
     const path = url.pathname.replace('/.netlify/functions/api', '').replace(/^\/+/, '');
-    const collection = qCollection || (path || 'products'); // ajuste por defecto
+
+    const aliasMap = {
+      productos: 'products',
+      producto: 'products',
+      categorias: 'categories',
+      categoria: 'categories'
+    };
+
+    const pathCollection = path.split('/').filter(Boolean)[0];
+    const aliasCollection = pathCollection ? (aliasMap[pathCollection] || pathCollection) : null;
+    const collection = qCollection || aliasCollection || 'products';
 
     const limit = Number(url.searchParams.get('limit') || 200);
 
