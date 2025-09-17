@@ -26,9 +26,13 @@ const ComponentsPage = () => {
   const cancelRequested = React.useRef(false);
   const activeControllers = React.useRef({ price: null, save: null });
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const apiBase = origin ? `${origin}/api` : '/api';
+  const scraperEndpoint = `${apiBase}/precio-casanacho`;
+
   const fetchComponents = async () => {
     try {
-      const res = await fetch(`${window.location.origin}/api/components`);
+      const res = await fetch(`${apiBase}/components`);
       if (res.ok) {
         const data = await res.json();
         setComponents(data);
@@ -127,7 +131,7 @@ const ComponentsPage = () => {
   const doDeleteComponent = async () => {
     if (!componentToDelete) return;
     try {
-      const res = await fetch(`${window.location.origin}/api/components/${componentToDelete.id}`, { method: 'DELETE' });
+      const res = await fetch(`${apiBase}/components/${componentToDelete.id}`, { method: 'DELETE' });
       if (res.ok) {
         await fetchComponents();
         setConfirmOpen(false);
@@ -182,7 +186,7 @@ const ComponentsPage = () => {
 
       try {
         const res = await fetch(
-          `http://localhost:3001/api/precio-casanacho?url=${encodeURIComponent(comp.link)}`,
+          `${scraperEndpoint}?url=${encodeURIComponent(comp.link)}`,
           { signal: priceController.signal }
         );
         const data = await res.json();
@@ -192,7 +196,7 @@ const ComponentsPage = () => {
         const newPrice = data.price;
         // Guardar en backend
         const saveRes = await fetch(
-          `${window.location.origin}/api/components/${comp.id}`,
+          `${apiBase}/components/${comp.id}`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -278,7 +282,7 @@ const ComponentsPage = () => {
 
       try {
         const res = await fetch(
-          `http://localhost:3001/api/precio-casanacho?url=${encodeURIComponent(comp.link)}`,
+          `${scraperEndpoint}?url=${encodeURIComponent(comp.link)}`,
           { signal: priceController.signal }
         );
         const data = await res.json();
@@ -286,7 +290,7 @@ const ComponentsPage = () => {
 
         const newPrice = data.price;
         const saveRes = await fetch(
-          `${window.location.origin}/api/components/${comp.id}`,
+          `${apiBase}/components/${comp.id}`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -337,13 +341,13 @@ const ComponentsPage = () => {
     const result = [];
     try {
       const res = await fetch(
-        `http://localhost:3001/api/precio-casanacho?url=${encodeURIComponent(comp.link)}`
+        `${scraperEndpoint}?url=${encodeURIComponent(comp.link)}`
       );
       const data = await res.json();
       if (res.ok) {
         const oldPrice = comp.price;
         await fetch(
-          `${window.location.origin}/api/components/${comp.id}`,
+          `${apiBase}/components/${comp.id}`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -483,7 +487,7 @@ const ComponentsPage = () => {
               }
               onComponentSubmit={async (componentData) => {
                 if (modalMode === 'edit') {
-                  const res = await fetch(`${window.location.origin}/api/components/${selectedComponent.id}`, {
+                  const res = await fetch(`${apiBase}/components/${selectedComponent.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(componentData)
@@ -495,7 +499,7 @@ const ComponentsPage = () => {
                     console.error('Error al actualizar el componente');
                   }
                 } else {
-                  const res = await fetch(`${window.location.origin}/api/components`, {
+                  const res = await fetch(`${apiBase}/components`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(componentData)
