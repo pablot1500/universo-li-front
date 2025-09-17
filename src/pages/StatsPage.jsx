@@ -1,0 +1,510 @@
+import React, { useEffect, useMemo, useState } from 'react';
+
+const StatsPage = () => {
+  const [sales, setSales] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Filtros
+  const todayStr = new Date().toISOString().split('T')[0];
+  const firstOfMonthStr = (() => {
+    const d = new Date();
+    d.setDate(1);
+    return d.toISOString().split('T')[0];
+  })();
+  const [startDate, setStartDate] = useState(firstOfMonthStr);
+  const [endDate, setEndDate] = useState(todayStr);
+  const [metric, setMetric] = useState('revenue'); // 'revenue' | 'units'
+  const [lowStockThreshold, setLowStockThreshold] = useState(5);
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [resSales, resProducts] = await Promise.all([
+          fetch('/api/sales'),
+          fetch('/api/products')
+        ]);
+        if (!resSales.ok || !resProducts.ok) throw new Error('Error cargando datos');
+        const [salesData, productsData] = await Promise.all([resSales.json(), resProducts.json()]);
+        setSales(salesData || []);
+        setProducts(productsData || []);
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchAll();
+  }, []);
+
+  const clampRange = (s, e) => {
+    if (!s && !e) return [null, null];
+    const sd = s ? new Date(s) : null;
+    const ed = e ? new Date(e) : null;
+    if (sd && ed && ed < sd) return [ed, sd];
+    return [sd, ed];
+  };
+
+  const saleAmount = (s) => {
+    const qty = Number(s.quantity) || 0;
+    const unit = Number(s.unitPrice) || 0;
+    const gan = Number(s.gananciaUnit) || 0;
+    const computed = qty * (unit + gan);
+    const fallback = Number(s.total) || 0;
+    return computed > 0 ? computed : fallback;
+  };
+
+  const computeProductCost = (p) => {
+    if (!p) return null;
+    const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
+    const otros = (p.componentes && Array.isArray(p.componentes.otros)) ? p.componentes.otros : [];
+    const telasTotal = telas.reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
+    const otrosTotal = otros.reduce((acc, o) => acc + ((Number(o?.unidades) || 0) * (Number(o?.precioUnitario) || 0)), 0);
+    const total = telasTotal + otrosTotal;
+    return Number.isFinite(total) && total > 0 ? total : null;
+  };
+
+  const joinedSales = useMemo(() => {
+    const map = new Map(products.map(p => [String(p.id), p]));
+    return (sales || []).map(s => ({
+      ...s,
+      product: map.get(String(s.productId)) || null
+    }));
+  }, [sales, products]);
+
+  const [sd, ed] = clampRange(startDate, endDate);
+
+  // Presets de rango rápido
+  const setPresetRange = (preset) => {
+    const now = new Date();
+    const toISO = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString().split('T')[0];
+    const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+    const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    if (preset === 'today') {
+      const t = toISO(now);
+      setStartDate(t); setEndDate(t); return;
+    }
+    if (preset === '7d') {
+      const s = new Date(now); s.setDate(s.getDate() - 6);
+      setStartDate(toISO(s)); setEndDate(toISO(now)); return;
+    }
+    if (preset === '30d') {
+      const s = new Date(now); s.setDate(s.getDate() - 29);
+      setStartDate(toISO(s)); setEndDate(toISO(now)); return;
+    }
+    if (preset === 'thisMonth') {
+      setStartDate(toISO(startOfMonth(now))); setEndDate(toISO(now)); return;
+    }
+    if (preset === 'lastMonth') {
+      const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      setStartDate(toISO(startOfMonth(last))); setEndDate(toISO(endOfMonth(last))); return;
+    }
+    if (preset === 'thisYear') {
+      const s = new Date(now.getFullYear(), 0, 1);
+      setStartDate(toISO(s)); setEndDate(toISO(now)); return;
+    }
+    if (preset === 'all') {
+      setStartDate(''); setEndDate(''); return;
+    }
+  };
+
+  const filteredSales = useMemo(() => {
+    return joinedSales.filter(s => {
+      if (!sd && !ed) return true;
+      const d = s.date ? new Date(s.date) : null;
+      if (!d) return false;
+      const afterStart = sd ? d >= sd : true;
+      const beforeEnd = ed ? d <= ed : true;
+      return afterStart && beforeEnd;
+    });
+  }, [joinedSales, sd, ed]);
+
+  const kpis = useMemo(() => {
+    const revenue = filteredSales.reduce((acc, s) => acc + saleAmount(s), 0);
+    const count = filteredSales.length;
+    const avg = count > 0 ? revenue / count : 0;
+    // margen estimado (parcial): usa costo unitario del producto cuando está disponible
+    let marginSum = 0;
+    let marginCount = 0;
+    for (const s of filteredSales) {
+      const costUnit = computeProductCost(s.product);
+      if (costUnit != null) {
+        const unit = Number(s.unitPrice) || (saleAmount(s) / (Number(s.quantity) || 1));
+        marginSum += (unit - costUnit) * (Number(s.quantity) || 0);
+        marginCount++;
+      }
+    }
+    return {
+      revenue,
+      count,
+      avg,
+      marginEstimated: marginSum, // puede ser parcial
+      marginCovered: marginCount,
+    };
+  }, [filteredSales]);
+
+  const paymentBreakdown = useMemo(() => {
+    const counts = new Map();
+    let total = 0;
+    for (const s of filteredSales) {
+      const key = s.paymentMethod || 'Otro';
+      counts.set(key, (counts.get(key) || 0) + 1);
+      total++;
+    }
+    const entries = Array.from(counts.entries()).map(([method, cnt]) => ({ method, count: cnt, pct: total ? (cnt * 100) / total : 0 }));
+    entries.sort((a, b) => b.count - a.count);
+    return { total, entries };
+  }, [filteredSales]);
+
+  const byCategory = useMemo(() => {
+    const acc = new Map();
+    for (const s of filteredSales) {
+      const cat = s.product?.category || 'Sin categoría';
+      const cur = acc.get(cat) || { revenue: 0, units: 0 };
+      cur.revenue += saleAmount(s);
+      cur.units += (Number(s.quantity) || 0);
+      acc.set(cat, cur);
+    }
+    const rows = Array.from(acc.entries()).map(([category, vals]) => ({ category, ...vals }));
+    rows.sort((a, b) => (metric === 'revenue' ? b.revenue - a.revenue : b.units - a.units));
+    return rows;
+  }, [filteredSales, metric]);
+
+  const byProduct = useMemo(() => {
+    const acc = new Map();
+    for (const s of filteredSales) {
+      const name = s.product?.name || `#${s.productId}`;
+      const cur = acc.get(name) || { revenue: 0, units: 0 };
+      cur.revenue += saleAmount(s);
+      cur.units += (Number(s.quantity) || 0);
+      acc.set(name, cur);
+    }
+    const rows = Array.from(acc.entries()).map(([product, vals]) => ({ product, ...vals }));
+    rows.sort((a, b) => (metric === 'revenue' ? b.revenue - a.revenue : b.units - a.units));
+    return rows.slice(0, 5);
+  }, [filteredSales, metric]);
+
+  const dailySeries = useMemo(() => {
+    const fmt = (d) => d.toISOString().split('T')[0];
+    const acc = new Map();
+    for (const s of filteredSales) {
+      const key = s.date || '—';
+      acc.set(key, (acc.get(key) || 0) + saleAmount(s));
+    }
+    const rows = Array.from(acc.entries()).map(([date, revenue]) => ({ date, revenue }));
+    rows.sort((a, b) => a.date.localeCompare(b.date));
+    return rows;
+  }, [filteredSales]);
+
+  const lowStock = useMemo(() => {
+    const thr = Number(lowStockThreshold) || 0;
+    return products
+      .filter(p => typeof p.available === 'number' && p.available <= thr)
+      .slice()
+      .sort((a, b) => (a.available - b.available))
+      .slice(0, 10);
+  }, [products, lowStockThreshold]);
+
+  // Estilos simples
+  const cardStyle = { padding: 12, border: '1px solid #eee', borderRadius: 8, background: '#fff' };
+  const sectionStyle = { marginTop: 16 };
+  const barRow = (label, value, max, suffix = '') => {
+    const pct = max > 0 ? Math.min(100, (value * 100) / max) : 0;
+    return (
+      <div key={label} style={{ marginBottom: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+          <span>{label}</span>
+          <span>{suffix === 'u' ? `${value} u` : `$ ${value.toFixed(2)}`}</span>
+        </div>
+        <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
+          <div style={{ width: `${pct}%`, height: '100%', background: 'rgba(0,153,255,0.7)', borderRadius: 6 }} />
+        </div>
+      </div>
+    );
+  };
+
+  if (loading) return <div>Cargando estadísticas…</div>;
+  if (error) return <div>Error: {error}</div>;
+
+  const palette = ['#00a2ff', '#ff7a59', '#00c49f', '#ffbb28', '#8884d8', '#82ca9d', '#ff8042'];
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 640;
+  const halfCardStyle = { ...cardStyle, boxSizing: 'border-box' };
+  const graphHeight = isMobile ? 140 : 180;
+  const maxCategoryRows = 10;
+  const maxDailyRows = 30;
+  const visibleByCategory = byCategory.slice(0, maxCategoryRows);
+  const visibleDailySeries = dailySeries.length > maxDailyRows
+    ? dailySeries.slice(dailySeries.length - maxDailyRows)
+    : dailySeries;
+  const maxDaily = visibleDailySeries.reduce((m, r) => Math.max(m, r.revenue), 0);
+  const maxCat = visibleByCategory.reduce((m, r) => Math.max(m, metric === 'revenue' ? r.revenue : r.units), 0);
+  const maxProd = byProduct.reduce((m, r) => Math.max(m, metric === 'revenue' ? r.revenue : r.units), 0);
+
+  return (
+    <div>
+      <h1>Estadísticas</h1>
+
+      {/* Filtros */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <label style={{ fontSize: 12, color: '#555' }}>Desde</label><br />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, color: '#555' }}>Hasta</label><br />
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, color: '#555' }}>Métrica</label><br />
+          <select value={metric} onChange={(e) => setMetric(e.target.value)}>
+            <option value="revenue">Ingresos</option>
+            <option value="units">Unidades</option>
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 12, color: '#555' }}>Umbral bajo stock</label><br />
+          <input type="number" value={lowStockThreshold} onChange={(e) => setLowStockThreshold(e.target.value)} style={{ width: 80 }} />
+        </div>
+        {/* Presets */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+          <button onClick={() => setPresetRange('today')}>Hoy</button>
+          <button onClick={() => setPresetRange('7d')}>7 días</button>
+          <button onClick={() => setPresetRange('30d')}>30 días</button>
+          <button onClick={() => setPresetRange('thisMonth')}>Mes actual</button>
+          <button onClick={() => setPresetRange('lastMonth')}>Mes anterior</button>
+          <button onClick={() => setPresetRange('thisYear')}>Año actual</button>
+          <button onClick={() => setPresetRange('all')}>Todo</button>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Ingresos</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.revenue.toFixed(2)}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Ventas</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{kpis.count}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Ticket promedio</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.avg.toFixed(2)}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Margen estimado</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.marginEstimated.toFixed(2)}</div>
+          <div style={{ fontSize: 11, color: '#999' }}>Basado en {kpis.marginCovered} ventas con costo conocido</div>
+        </div>
+      </div>
+
+      {/* Fila de gráficos: Métodos de pago (dona) + Top 5 productos (barras) */}
+      <div style={{ ...sectionStyle }}>
+        <div className="stats-two-col">
+          {/* Métodos de pago - dona */}
+          <div style={halfCardStyle}>
+            <div style={{ marginBottom: 32, fontWeight: 600 }}>Métodos de pago</div>
+            {paymentBreakdown.entries.length === 0 ? (
+              <div style={{ color: '#777' }}>Sin datos</div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: (isMobile ? 12 : 16), flexWrap: 'wrap', padding: (isMobile ? '24px 12px 10px' : '28px 20px 12px'), justifyContent: 'center' }}>
+                {(() => {
+                  const total = paymentBreakdown.entries.reduce((a, e) => a + e.count, 0);
+                  let accPct = 0;
+                  const segments = paymentBreakdown.entries.map((e, idx) => {
+                    const start = accPct;
+                    const end = accPct + e.pct; // en %
+                    accPct = end;
+                    const color = palette[idx % palette.length];
+                    return `${color} ${start}% ${end}%`;
+                  }).join(', ');
+                  const size = isMobile ? 96 : 160;
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: (isMobile ? 8 : 16), flexDirection: (isMobile ? 'column' : 'row') }}>
+                      <div style={{ position: 'relative', width: size, height: size, borderRadius: '50%', background: `conic-gradient(${segments})` }}>
+                        <div style={{ position: 'absolute', inset: (isMobile ? 12 : 16), borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: (isMobile ? 12 : 14), color: '#555' }}>
+                          {total} ventas
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: (isMobile ? 'center' : 'flex-start') }}>
+                        {paymentBreakdown.entries.map((e, idx) => (
+                          <div key={e.method} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <div style={{ width: 10, height: 10, background: palette[idx % palette.length], borderRadius: 2 }} />
+                            <div style={{ width: (isMobile ? undefined : 120), textAlign: (isMobile ? 'center' : 'left') }}>{e.method}</div>
+                            <div style={{ width: (isMobile ? undefined : 80), textAlign: (isMobile ? 'center' : 'right'), fontSize: 12 }}>{e.pct.toFixed(1)}%</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+
+          {/* Top 5 productos - barras verticales con etiquetas */}
+          <div style={halfCardStyle}>
+            <div style={{ marginBottom: 32, fontWeight: 600 }}>Top 5 productos ({metric === 'revenue' ? 'Ingresos' : 'Unidades'})</div>
+            {byProduct.length === 0 ? (
+              <div style={{ color: '#777' }}>Sin datos</div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: (isMobile ? 6 : 12), height: graphHeight, padding: (isMobile ? '20px 12px 10px' : '28px 20px 12px'), justifyContent: 'center' }}>
+                  {byProduct.map((r, idx) => {
+                    const val = metric === 'revenue' ? r.revenue : r.units;
+                    const h = maxProd ? Math.max(2, (val * graphHeight) / maxProd) : 2;
+                    const color = palette[idx % palette.length];
+                    return (
+                      <div key={r.product} style={{ width: (isMobile ? 48 : 68), display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                        <div style={{ position: 'relative', width: '100%', height: graphHeight }}>
+                          <div title={`${r.product} • ${metric === 'revenue' ? '$ ' + val.toFixed(2) : val + ' u'}`}
+                               style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 0, width: (isMobile ? 16 : 24), height: h, background: color, borderRadius: 3 }} />
+                          <div style={{ position: 'absolute', bottom: h + 2, left: '50%', transform: 'translateX(-50%)', fontSize: (isMobile ? 9 : 10), color: '#555', whiteSpace: 'nowrap' }}>
+                            {metric === 'revenue' ? Math.round(val).toLocaleString('es-AR') : val}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: (isMobile ? 9 : 10),
+                            color: '#666',
+                            textAlign: 'center',
+                            width: '100%',
+                            whiteSpace: 'normal',
+                            wordBreak: 'break-word',
+                            overflowWrap: 'anywhere',
+                            lineHeight: 1.2,
+                          }}
+                          title={r.product}
+                        >
+                          {r.product}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Por categoría - barras con colores */}
+      <div style={{ ...sectionStyle, ...cardStyle }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>Por categoría ({metric === 'revenue' ? 'Ingresos' : 'Unidades'})</div>
+        {byCategory.length === 0 ? (
+          <div style={{ color: '#777' }}>Sin datos</div>
+        ) : (
+          <div>
+            {visibleByCategory.map((r, idx) => {
+              const val = metric === 'revenue' ? r.revenue : r.units;
+              const pct = maxCat > 0 ? Math.min(100, (val * 100) / maxCat) : 0;
+              const color = palette[idx % palette.length];
+              return (
+                <div key={r.category} style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                    <span>{r.category}</span>
+                    <span>{metric === 'revenue' ? `$ ${val.toFixed(2)}` : `${val} u`}</span>
+                  </div>
+                  <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 6 }} />
+                  </div>
+                </div>
+              );
+            })}
+            {byCategory.length > maxCategoryRows && (
+              <div style={{ color: '#999', fontSize: 12, marginTop: 6 }}>otras categorías omitidas por espacio</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Ingresos por día - barras horizontales (similar a Por categoría) */}
+      <div style={{ ...sectionStyle, ...cardStyle }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>Ingresos por día</div>
+        {dailySeries.length === 0 ? (
+          <div style={{ color: '#777' }}>Sin datos</div>
+        ) : (
+          <div>
+            {visibleDailySeries.map((r, idx) => {
+              const val = r.revenue;
+              const pct = maxDaily > 0 ? Math.min(100, (val * 100) / maxDaily) : 0;
+              const color = palette[idx % palette.length];
+              return (
+                <div key={r.date} style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                    <span>{r.date}</span>
+                    <span>$ {val.toFixed(2)}</span>
+                  </div>
+                  <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 6 }} />
+                  </div>
+                </div>
+              );
+            })}
+            {dailySeries.length > maxDailyRows && (
+              <div style={{ color: '#999', fontSize: 12, marginTop: 6 }}>otros días omitidos por espacio</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Inventario: bajo stock */}
+      <div style={{ ...sectionStyle, ...cardStyle }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>Bajo stock</div>
+        {lowStock.length === 0 ? (
+          <div style={{ color: '#777' }}>Sin alertas</div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 6 }}>
+            {lowStock.map(p => (
+              <React.Fragment key={p.id}>
+                <div>{p.name} <span style={{ color: '#999' }}>({p.category || 'Sin categoría'})</span></div>
+                <div style={{ textAlign: 'right' }}>{p.available}</div>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Ventas recientes */}
+      <div style={{ ...sectionStyle, ...cardStyle }}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>Ventas recientes</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Fecha</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Producto</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Cant.</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Importe</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Pago</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredSales
+                .slice()
+                .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+                .slice(0, 10)
+                .map(s => (
+                  <tr key={s.id}>
+                    <td style={{ padding: 8 }}>{s.date}</td>
+                    <td style={{ padding: 8 }}>{s.product?.name || `#${s.productId}`}</td>
+                    <td style={{ padding: 8, textAlign: 'right' }}>{s.quantity}</td>
+                    <td style={{ padding: 8, textAlign: 'right' }}>$ {saleAmount(s).toFixed(2)}</td>
+                    <td style={{ padding: 8 }}>{s.paymentMethod || '—'}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{ height: 24 }} />
+    </div>
+  );
+};
+
+export default StatsPage;
