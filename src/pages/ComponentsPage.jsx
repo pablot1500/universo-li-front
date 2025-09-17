@@ -25,6 +25,8 @@ const ComponentsPage = () => {
   const [currentIndex, setCurrentIndex] = useState(-1);
   const cancelRequested = React.useRef(false);
   const activeControllers = React.useRef({ price: null, save: null });
+  const [syncState, setSyncState] = useState('idle');
+  const [syncMessage, setSyncMessage] = useState('');
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const apiBase = origin ? `${origin}/api` : '/api';
@@ -34,15 +36,29 @@ const ComponentsPage = () => {
 
   const fetchComponents = async () => {
     try {
+      if (syncState !== 'syncing') {
+        setSyncState('syncing');
+        setSyncMessage('Sincronizando con el servidor…');
+      }
       const res = await fetch(`${apiBase}/components`);
       if (res.ok) {
         const data = await res.json();
         setComponents(data);
+        setSyncState('success');
+        setSyncMessage('Cambios sincronizados');
+        setTimeout(() => {
+          setSyncState(prev => (prev === 'success' ? 'idle' : prev));
+          setSyncMessage('');
+        }, 2000);
       } else {
         console.error('Error fetching components');
+        setSyncState('error');
+        setSyncMessage('Error al sincronizar con el servidor');
       }
     } catch (error) {
       console.error('Error fetching components:', error);
+      setSyncState('error');
+      setSyncMessage('Error al sincronizar con el servidor');
     }
   };
 
@@ -148,14 +164,20 @@ const ComponentsPage = () => {
       const res = await fetch(`${apiBase}/components/${componentToDelete.id}`, { method: 'DELETE' });
       if (res.ok) {
         setComponents(prev => prev.filter(c => c.id !== componentToDelete.id));
+        setSyncState('syncing');
+        setSyncMessage('Actualizando componente…');
         scheduleComponentsRefresh();
         setConfirmOpen(false);
         setComponentToDelete(null);
       } else {
         console.error('Error al eliminar el componente');
+        setSyncState('error');
+        setSyncMessage('Error al eliminar el componente');
       }
     } catch (error) {
       console.error('Error al eliminar el componente:', error);
+      setSyncState('error');
+      setSyncMessage('Error al eliminar el componente');
     }
   };
 
@@ -510,10 +532,14 @@ const ComponentsPage = () => {
                   if (res.ok) {
                     const updated = await res.json().catch(() => null);
                     setComponents(prev => prev.map(c => c.id === selectedComponent.id ? { ...c, ...(updated || componentData), id: selectedComponent.id } : c));
+                    setSyncState('syncing');
+                    setSyncMessage('Guardando cambios…');
                     scheduleComponentsRefresh();
                     setShowModal(false);
                   } else {
                     console.error('Error al actualizar el componente');
+                    setSyncState('error');
+                    setSyncMessage('Error al guardar el componente');
                   }
                 } else {
                   const res = await fetch(`${apiBase}/components`, {
@@ -528,10 +554,14 @@ const ComponentsPage = () => {
                       const record = { ...(created || componentData) };
                       return [...next, record];
                     });
+                    setSyncState('syncing');
+                    setSyncMessage('Creando componente…');
                     scheduleComponentsRefresh();
                     setShowModal(false);
                   } else {
                     console.error('Error al agregar el componente');
+                    setSyncState('error');
+                    setSyncMessage('Error al crear el componente');
                   }
                 }
               }}
@@ -579,6 +609,33 @@ const ComponentsPage = () => {
             </div>
           </div>
         </>
+      )}
+
+      {syncState !== 'idle' && (
+        <div style={{
+          position: 'fixed',
+          left: '16px',
+          bottom: '16px',
+          backgroundColor: syncState === 'error' ? '#b03434' : '#1e88e5',
+          color: '#fff',
+          padding: '10px 16px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+          fontSize: '14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          zIndex: 1200,
+          transition: 'opacity 0.3s ease',
+          opacity: syncState === 'success' ? 0.92 : 1
+        }}>
+          <span>
+            {syncState === 'syncing' && '⏳'}
+            {syncState === 'success' && '✅'}
+            {syncState === 'error' && '⚠️'}
+          </span>
+          <span>{syncMessage || (syncState === 'success' ? 'Sincronizado' : 'Procesando…')}</span>
+        </div>
       )}
     </div>
   );
