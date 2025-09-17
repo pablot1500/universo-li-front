@@ -62,9 +62,13 @@ const StatsPage = () => {
     const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
     const otros = (p.componentes && Array.isArray(p.componentes.otros)) ? p.componentes.otros : [];
     const telasTotal = telas.reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
-    const otrosTotal = otros.reduce((acc, o) => acc + ((Number(o?.unidades) || 0) * (Number(o?.precioUnitario) || 0)), 0);
+    const otrosTotal = otros
+      .filter(o => !o?.tagConfeccion)
+      .reduce((acc, o) => acc + ((Number(o?.unidades) || 0) * (Number(o?.precioUnitario) || 0)), 0);
     const total = telasTotal + otrosTotal;
-    return Number.isFinite(total) && total > 0 ? total : null;
+    if (total > 0) return total;
+    const fallback = Number(p.price) || 0;
+    return fallback > 0 ? fallback : null;
   };
 
   const joinedSales = useMemo(() => {
@@ -130,10 +134,12 @@ const StatsPage = () => {
     let marginSum = 0;
     let marginCount = 0;
     for (const s of filteredSales) {
+      const qty = Number(s.quantity) || 0;
+      if (!qty) continue;
       const costUnit = computeProductCost(s.product);
       if (costUnit != null) {
-        const unit = Number(s.unitPrice) || (saleAmount(s) / (Number(s.quantity) || 1));
-        marginSum += (unit - costUnit) * (Number(s.quantity) || 0);
+        const unit = saleAmount(s) / qty;
+        marginSum += (unit - costUnit) * qty;
         marginCount++;
       }
     }
