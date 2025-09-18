@@ -123,7 +123,7 @@ const ComponentsPage = () => {
     width: '60px',
     height: '60px',
     borderRadius: '50%',
-    backgroundColor: 'rgba(0,153,255,0.7)',
+    backgroundColor: 'rgba(248,168,201,0.7)',
     color: '#fff',
     fontSize: '36px',
     border: 'none',
@@ -143,7 +143,7 @@ const ComponentsPage = () => {
   const scrollTopButtonStyle = {
     ...fabStyle,
     bottom: '160px',
-    backgroundColor: 'rgba(0,153,255,0.7)',
+    backgroundColor: 'rgba(248,168,201,0.7)',
     transition: 'opacity 0.25s ease, transform 0.25s ease'
   };
 
@@ -566,7 +566,7 @@ const ComponentsPage = () => {
       <button
         style={{
           ...reloadButtonStyle,
-          backgroundColor: isDisabled ? 'rgba(0,153,255,0.3)' : reloadButtonStyle.backgroundColor,
+          backgroundColor: isDisabled ? 'rgba(248,168,201,0.3)' : reloadButtonStyle.backgroundColor,
           cursor: isDisabled ? 'not-allowed' : reloadButtonStyle.cursor
         }}
         onClick={handleBulkAutocomplete}
@@ -579,7 +579,7 @@ const ComponentsPage = () => {
       <button
         style={{
           ...fabStyle,
-          backgroundColor: isDisabled ? 'rgba(0,153,255,0.3)' : fabStyle.backgroundColor,
+          backgroundColor: isDisabled ? 'rgba(248,168,201,0.3)' : fabStyle.backgroundColor,
           cursor: isDisabled ? 'not-allowed' : fabStyle.cursor
         }}
         onClick={handleAddComponent}

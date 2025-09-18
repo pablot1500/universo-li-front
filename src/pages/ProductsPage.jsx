@@ -1,6 +1,143 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ProductForm from '../components/ProductForm';
 import ProductList from '../components/ProductList';
+
+const DEFAULT_PRICE_ADJUSTMENTS = Object.freeze([
+  { name: 'Inflación', percent: 2 },
+  { name: 'Con cuenta DNI', percent: 2 },
+  { name: 'En dos veces', percent: 15 },
+  { name: 'Con transferencia', percent: 15 }
+]);
+
+const normalizeAdjustmentKey = (value) => (value || '')
+  .toString()
+  .trim()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, '')
+  .toLowerCase();
+
+const RENAME_ADJUSTMENTS = {
+  ctadni: 'Con cuenta DNI',
+  endosveces: 'En dos veces',
+  transferencia: 'Con transferencia'
+};
+
+const REMOVED_ADJUSTMENTS = new Set(['efectivo']);
+
+const cloneDefaultAdjustments = () => DEFAULT_PRICE_ADJUSTMENTS.map(item => ({ ...item }));
+
+const hasLegacyAdjustmentNames = (adjustments = []) => {
+  return adjustments.some(item => {
+    const key = normalizeAdjustmentKey(item?.name);
+    return Boolean(RENAME_ADJUSTMENTS[key]) || REMOVED_ADJUSTMENTS.has(key) || !item?.name;
+  });
+};
+
+const hasLegacyModifiers = (modifiers) => {
+  if (!modifiers || typeof modifiers !== 'object') return false;
+  return Object.keys(modifiers).some(name => {
+    const key = normalizeAdjustmentKey(name);
+    return Boolean(RENAME_ADJUSTMENTS[key]) || REMOVED_ADJUSTMENTS.has(key);
+  });
+};
+
+const shouldEnsureDefaultAdjustments = (adjustments, modifiers) => {
+  if (!Array.isArray(adjustments) || adjustments.length === 0) return true;
+  if (hasLegacyAdjustmentNames(adjustments)) return true;
+  if (hasLegacyModifiers(modifiers)) return true;
+  return false;
+};
+
+const normalizePriceAdjustments = (list = [], { ensureDefaults = false } = {}) => {
+  const normalized = [];
+  const seen = new Set();
+
+  list.forEach(item => {
+    if (!item) return;
+    const rawName = typeof item.name === 'string' ? item.name : '';
+    const rawKey = normalizeAdjustmentKey(rawName);
+    if (!rawName && !Number.isFinite(Number(item.percent))) return;
+    if (REMOVED_ADJUSTMENTS.has(rawKey)) return;
+
+    const renamed = RENAME_ADJUSTMENTS[rawKey];
+    const finalName = (renamed || rawName || '').trim();
+    if (!finalName) return;
+
+    const finalKey = normalizeAdjustmentKey(finalName);
+    if (REMOVED_ADJUSTMENTS.has(finalKey) || seen.has(finalKey)) return;
+
+    let percent = Number(item.percent);
+    const defaultTemplate = DEFAULT_PRICE_ADJUSTMENTS.find(tpl => normalizeAdjustmentKey(tpl.name) === finalKey);
+    const renamedFromAlias = Boolean(renamed);
+    if (!Number.isFinite(percent)) percent = defaultTemplate?.percent ?? 0;
+    if (renamedFromAlias && defaultTemplate) {
+      percent = defaultTemplate.percent;
+    }
+
+    normalized.push({ name: finalName, percent: Number.isFinite(percent) ? percent : 0 });
+    seen.add(finalKey);
+  });
+
+  if (!ensureDefaults) {
+    return normalized;
+  }
+
+  const defaultOrder = DEFAULT_PRICE_ADJUSTMENTS.map(item => normalizeAdjustmentKey(item.name));
+
+  DEFAULT_PRICE_ADJUSTMENTS.forEach(template => {
+    const key = normalizeAdjustmentKey(template.name);
+    if (!seen.has(key)) {
+      normalized.push({ ...template });
+      seen.add(key);
+    }
+  });
+
+  const partitioned = normalized.reduce((acc, item) => {
+    const key = normalizeAdjustmentKey(item.name);
+    const idx = defaultOrder.indexOf(key);
+    if (idx === -1) {
+      acc.custom.push(item);
+    } else {
+      if (!acc.defaults[idx]) acc.defaults[idx] = item;
+      else acc.custom.push(item);
+    }
+    return acc;
+  }, { defaults: Array(defaultOrder.length).fill(null), custom: [] });
+
+  const orderedDefaults = partitioned.defaults.filter(Boolean);
+  return [...orderedDefaults, ...partitioned.custom];
+};
+
+const buildModifiersFromAdjustments = (adjustments = []) => {
+  return adjustments.reduce((acc, item) => {
+    const key = (item?.name || '').trim();
+    if (!key) return acc;
+    const percent = Number(item?.percent);
+    acc[key] = Number.isFinite(percent) ? Number((percent / 100).toFixed(4)) : 0;
+    return acc;
+  }, {});
+};
+
+const round2 = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : n;
+};
+
+const fmt2 = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(2) : '';
+};
+
+const norm = (s) => (s || '')
+  .toString()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase();
+
+const isConfeccionName = (name) => norm(name).includes('confeccion');
+
+const cloneDetailProduct = (product) => (product ? JSON.parse(JSON.stringify(product)) : null);
 
 const ProductsPage = () => {
   const [refresh, setRefresh] = useState(0);
@@ -13,6 +150,13 @@ const ProductsPage = () => {
   const [showProductComments, setShowProductComments] = useState(false);
   const [productComment, setProductComment] = useState('');
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const HISTORY_LIMIT = 50;
+  const detailHistoryRef = useRef([]);
+  const isUndoingRef = useRef(false);
+  const [canUndo, setCanUndo] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
 
   // Listas de componentes disponibles para dropdowns
   const [telaComponents, setTelaComponents] = useState([]);
@@ -37,6 +181,9 @@ const ProductsPage = () => {
   const selectorListRef = useRef(null);
   const selectorOptionRefs = useRef([]);
   const selectorAllowExitRef = useRef(false);
+  const latestDetailRef = useRef(null);
+  const autosaveTimerRef = useRef(null);
+  const pendingSaveRef = useRef(false);
 
   const selectorOptions = useMemo(() => {
     if (!selectorOpen) return [];
@@ -208,7 +355,16 @@ const ProductsPage = () => {
     transition: 'opacity 180ms ease'
   });
   const [addClosing, setAddClosing] = useState(false);
-  const closeDetailModal = () => { setDetailClosing(true); setTimeout(() => { setShowDetailModal(false); setDetailClosing(false); }, 180); };
+  const closeDetailModal = () => {
+    setDetailClosing(true);
+    setTimeout(() => {
+      setShowDetailModal(false);
+      setDetailClosing(false);
+      detailHistoryRef.current = [];
+      setCanUndo(false);
+      isUndoingRef.current = false;
+    }, 180);
+  };
   const closeAddModal = () => { setAddClosing(true); setTimeout(() => { setShowModal(false); setAddClosing(false); }, 180); };
   const commentModalStyle = {
     position: 'fixed',
@@ -255,7 +411,7 @@ const ProductsPage = () => {
     width: '60px',
     height: '60px',
     borderRadius: '50%',
-    backgroundColor: 'rgba(0,153,255,0.7)',
+    backgroundColor: 'rgba(248,168,201,0.7)',
     color: '#fff',
     fontSize: '36px',
     border: 'none',
@@ -312,6 +468,13 @@ const ProductsPage = () => {
       if (!payload.priceAdjustments) {
         payload.priceAdjustments = [];
       }
+      const ensureDefaults = shouldEnsureDefaultAdjustments(payload.priceAdjustments, payload?.pricing?.modificadores || payload?.modificadores);
+      payload.priceAdjustments = normalizePriceAdjustments(payload.priceAdjustments, { ensureDefaults });
+      payload.defaultsMigrated = true;
+      const modifiersObj = buildModifiersFromAdjustments(payload.priceAdjustments);
+      const existingPricing = payload.pricing && typeof payload.pricing === 'object' ? payload.pricing : {};
+      payload.pricing = { ...existingPricing, modificadores: modifiersObj };
+      payload.modificadores = modifiersObj;
       await fetch(`/api/products/${selectedProduct.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -332,16 +495,33 @@ const ProductsPage = () => {
       if (!payload.priceAdjustments) {
         payload.priceAdjustments = [];
       }
+      const ensureDefaults = shouldEnsureDefaultAdjustments(payload.priceAdjustments, payload?.pricing?.modificadores || payload?.modificadores);
+      payload.priceAdjustments = normalizePriceAdjustments(payload.priceAdjustments, { ensureDefaults });
+      payload.defaultsMigrated = true;
+      const modifiersObj = buildModifiersFromAdjustments(payload.priceAdjustments);
+      const existingPricing = payload.pricing && typeof payload.pricing === 'object' ? payload.pricing : {};
+      payload.pricing = { ...existingPricing, modificadores: modifiersObj };
+      payload.modificadores = modifiersObj;
       await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
     } else {
+      const priceAdjustments = normalizePriceAdjustments(cloneDefaultAdjustments(), { ensureDefaults: true });
+      const modifiersObj = buildModifiersFromAdjustments(priceAdjustments);
+      const payload = {
+        ...data,
+        componentes: { telas: [], otros: [] },
+        priceAdjustments,
+        pricing: { modificadores: modifiersObj },
+        modificadores: modifiersObj,
+        defaultsMigrated: true
+      };
       await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(payload)
       });
     }
     setRefresh(prev => prev + 1);
@@ -353,12 +533,17 @@ const ProductsPage = () => {
       componentes: { telas: [], otros: [] },
       costoConfeccion: 0,
     };
+    setSaveError(null);
+    setLastSavedAt(null);
+    detailHistoryRef.current = [];
+    setCanUndo(false);
+    isUndoingRef.current = false;
     // Normaliza estructura mínima para evitar errores
     // Construye ajustes a partir de priceAdjustments y pricing.modificadores
     const existingAdjustments = Array.isArray(product?.priceAdjustments) ? product.priceAdjustments : [];
-    const modifiersObj = (product?.pricing && product.pricing.modificadores) || product?.modificadores || null;
-    const modifierAdjustments = modifiersObj && typeof modifiersObj === 'object'
-      ? Object.entries(modifiersObj).map(([name, frac]) => ({
+    const rawModifiers = (product?.pricing && product.pricing.modificadores) || product?.modificadores || null;
+    const modifierAdjustments = rawModifiers && typeof rawModifiers === 'object'
+      ? Object.entries(rawModifiers).map(([name, frac]) => ({
           name,
           percent: Number(isFinite(frac) ? (frac * 100).toFixed(2) : 0)
         }))
@@ -371,6 +556,12 @@ const ProductsPage = () => {
       if (!mergedByName.has(key)) mergedByName.set(key, a);
     });
     const mergedAdjustments = Array.from(mergedByName.values());
+    const ensureDefaults = shouldEnsureDefaultAdjustments(mergedAdjustments, rawModifiers) && !product?.defaultsMigrated;
+    const normalizedAdjustments = normalizePriceAdjustments(mergedAdjustments, { ensureDefaults });
+    const finalAdjustments = (normalizedAdjustments.length > 0)
+      ? normalizedAdjustments
+      : (ensureDefaults ? cloneDefaultAdjustments() : []);
+    const modifiersObj = buildModifiersFromAdjustments(finalAdjustments);
 
     const normalized = {
       ...product,
@@ -378,7 +569,13 @@ const ProductsPage = () => {
         telas: product?.componentes?.telas ? [...product.componentes.telas] : [],
         otros: product?.componentes?.otros ? [...product.componentes.otros] : [],
       },
-      priceAdjustments: mergedAdjustments
+      priceAdjustments: finalAdjustments,
+      pricing: {
+        ...(product?.pricing && typeof product.pricing === 'object' ? product.pricing : {}),
+        modificadores: modifiersObj
+      },
+      modificadores: modifiersObj,
+      defaultsMigrated: product?.defaultsMigrated || ensureDefaults
     };
     setDetailProduct({ ...base, ...normalized });
     setShowDetailModal(true);
@@ -406,23 +603,165 @@ const ProductsPage = () => {
     }
   };
 
-  // Helpers de formato/redondeo
-  const round2 = (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.round(n * 100) / 100 : n;
-  };
-  const fmt2 = (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n.toFixed(2) : '';
-  };
+  const buildPersistPayload = useCallback((product) => {
+    if (!product) return null;
+    const telas = (product.componentes?.telas || []).filter(t => t.componentId);
+    const otrosRaw = product.componentes?.otros || [];
+    const otrosRows = otrosRaw.map(o => {
+      const compName = otherById[o.componentId]?.name;
+      const isConf = isConfeccionName(compName);
+      const unidades = Number(o.unidades) || 0;
+      const precio = Number(o.precioUnitario) || 0;
+      return { ref: o, isConf, total: unidades * precio };
+    });
+    const otrosConfeccionTotal = otrosRows.filter(r => r.isConf).reduce((acc, r) => acc + r.total, 0);
+    const hasConfeccion = otrosRows.some(r => r.isConf);
+    const costoConfeccionValue = hasConfeccion
+      ? round2(otrosConfeccionTotal)
+      : (Number(product?.costoConfeccion) || 0);
 
-  // Normaliza string para búsqueda sin tildes y case-insensitive
-  const norm = (s) => (s || '')
-    .toString()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-  const isConfeccionName = (name) => norm(name).includes('confeccion');
+    const sanitizedAdjustments = normalizePriceAdjustments(product?.priceAdjustments || []);
+    const modifiersObj = buildModifiersFromAdjustments(sanitizedAdjustments);
+
+    return {
+      ...product,
+      componentes: {
+        ...product.componentes,
+        telas,
+        otros: otrosRaw
+          .filter(o => o.componentId)
+          .map(o => ({
+            ...o,
+            tagConfeccion: isConfeccionName(otherById[o.componentId]?.name)
+          }))
+      },
+      priceAdjustments: sanitizedAdjustments.map(a => ({
+        name: a.name,
+        percent: round2(Number(a.percent))
+      })),
+      pricing: {
+        ...(product?.pricing || {}),
+        modificadores: modifiersObj
+      },
+      costoConfeccion: costoConfeccionValue,
+      modificadores: modifiersObj,
+      defaultsMigrated: true
+    };
+  }, [otherById, isConfeccionName]);
+
+  const persistDetail = useCallback(async () => {
+    const current = latestDetailRef.current;
+    if (!current?.id) return;
+    const payload = buildPersistPayload(current);
+    if (!payload) return;
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    pendingSaveRef.current = false;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await fetch(`/api/products/${current.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setDetailProduct(prev => {
+        if (!prev) return prev;
+        if (prev.id !== current.id) return prev;
+        return {
+          ...prev,
+          pricing: {
+            ...(prev.pricing || {}),
+            modificadores: payload.pricing.modificadores
+          },
+          modificadores: payload.modificadores,
+          defaultsMigrated: true
+        };
+      });
+      setLastSavedAt(Date.now());
+    } catch (err) {
+      console.error('Error auto-guardando detalle:', err);
+      setSaveError(err);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [buildPersistPayload]);
+
+  const schedulePersist = useCallback(() => {
+    if (!latestDetailRef.current?.id) return;
+    setSaveError(null);
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+    pendingSaveRef.current = true;
+    autosaveTimerRef.current = setTimeout(() => {
+      persistDetail();
+    }, 800);
+  }, [persistDetail]);
+
+  const withHistory = useCallback((updateFn, options = {}) => {
+    let snapshot = null;
+    let changed = false;
+    setDetailProduct(prev => {
+      if (!prev) return prev;
+      const next = updateFn(prev);
+      if (!next || next === prev) return prev;
+      changed = true;
+      if (!isUndoingRef.current) {
+        snapshot = cloneDetailProduct(prev);
+      }
+      return next;
+    });
+    if (!changed) return;
+    if (snapshot) {
+      detailHistoryRef.current.push(snapshot);
+      if (detailHistoryRef.current.length > HISTORY_LIMIT) {
+        detailHistoryRef.current.shift();
+      }
+      setCanUndo(true);
+    }
+    if (options.schedule !== false) {
+      schedulePersist();
+    }
+  }, [schedulePersist]);
+
+  const handleUndo = useCallback(() => {
+    if (!canUndo || detailHistoryRef.current.length === 0) return;
+    const snapshot = detailHistoryRef.current.pop();
+    if (!snapshot) return;
+    isUndoingRef.current = true;
+    setDetailProduct(snapshot);
+    isUndoingRef.current = false;
+    if (detailHistoryRef.current.length === 0) {
+      setCanUndo(false);
+    }
+    schedulePersist();
+  }, [canUndo, schedulePersist]);
+
+  useEffect(() => {
+    latestDetailRef.current = detailProduct;
+  }, [detailProduct]);
+
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+      }
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false;
+        persistDetail();
+      }
+    };
+  }, [persistDetail]);
+
+  useEffect(() => {
+    if (!showDetailModal && pendingSaveRef.current) {
+      pendingSaveRef.current = false;
+      persistDetail();
+    }
+  }, [showDetailModal, persistDetail]);
 
   const reorderItems = (list = [], fromIdx, toIdx) => {
     if (fromIdx == null || toIdx == null || fromIdx === toIdx) return list;
@@ -435,8 +774,7 @@ const ProductsPage = () => {
   };
 
   const handleTelaReorder = (toIndex) => {
-    setDetailProduct(prev => {
-      if (!prev) return prev;
+    withHistory(prev => {
       const telas = prev.componentes?.telas || [];
       const reordered = reorderItems(telas, draggingTelaIndex, toIndex);
       if (reordered === telas) return prev;
@@ -452,8 +790,7 @@ const ProductsPage = () => {
   };
 
   const handleOtroReorder = (toIndex) => {
-    setDetailProduct(prev => {
-      if (!prev) return prev;
+    withHistory(prev => {
       const otros = prev.componentes?.otros || [];
       const reordered = reorderItems(otros, draggingOtroIndex, toIndex);
       if (reordered === otros) return prev;
@@ -469,8 +806,7 @@ const ProductsPage = () => {
   };
 
   const sortTelasAlphabetically = () => {
-    setDetailProduct(prev => {
-      if (!prev) return prev;
+    withHistory(prev => {
       const telas = (prev.componentes?.telas || []).slice();
       telas.sort((a, b) => {
         const nameA = a?.componentId ? norm(telaById[a.componentId]?.name || '') : 'zzzz';
@@ -490,8 +826,7 @@ const ProductsPage = () => {
   };
 
   const sortOtrosAlphabetically = () => {
-    setDetailProduct(prev => {
-      if (!prev) return prev;
+    withHistory(prev => {
       const otros = (prev.componentes?.otros || []).slice();
       otros.sort((a, b) => {
         const nameA = a?.componentId ? norm(otherById[a.componentId]?.name || '') : 'zzzz';
@@ -569,31 +904,25 @@ const ProductsPage = () => {
 
   // Handler to update tela fields and compute dependent values
   const handleTelaChange = (idx, field, value) => {
-    setDetailProduct(prev => {
-      // copy existing telas, allow adding new row when editing last
-      let newTelas = [...(prev.componentes?.telas || [])];
-      // Redondeos de inputs a 2 decimales
-      const numericFields = ['anchoTelaCm','anchoCm','largoCm','porcentajeDesperdicio'];
+    withHistory(prev => {
+      const newTelas = [...(prev.componentes?.telas || [])];
+      if (!newTelas[idx]) return prev;
+      const numericFields = ['anchoTelaCm', 'anchoCm', 'largoCm', 'porcentajeDesperdicio'];
       const newValue = numericFields.includes(field) ? round2(value) : value;
       const tela = { ...newTelas[idx], [field]: newValue };
-      // When componentId changes, import precioPorMetro from selected component
       if (field === 'componentId') {
         const comp = telaComponents.find(c => c.id === value);
         tela.precioPorMetro = comp?.price || 0;
       }
-      // Compute valorCm2 when precioPorMetro and anchoTelaCm exist
       if (tela.precioPorMetro && tela.anchoTelaCm) {
         tela.valorCm2 = round2(tela.precioPorMetro / tela.anchoTelaCm);
       }
-      // Compute materialPuroCm2 when anchoCm and largoCm exist
       if (tela.anchoCm && tela.largoCm) {
         tela.materialPuroCm2 = round2((tela.anchoCm * tela.largoCm) / 100);
       }
-      // Compute totalMaterialCm2 when materialPuroCm2 and porcentajeDesperdicio exist
       if (tela.materialPuroCm2 != null && tela.porcentajeDesperdicio != null) {
         tela.totalMaterialCm2 = round2(tela.materialPuroCm2 * (1 + tela.porcentajeDesperdicio / 100));
       }
-      // Compute costoMaterial when totalMaterialCm2 and valorCm2 exist
       if (tela.totalMaterialCm2 != null && tela.valorCm2 != null) {
         tela.costoMaterial = round2(tela.totalMaterialCm2 * tela.valorCm2);
       }
@@ -609,7 +938,7 @@ const ProductsPage = () => {
   };
 
   const addTelaRow = () => {
-    setDetailProduct(prev => ({
+    withHistory(prev => ({
       ...prev,
       componentes: {
         ...prev.componentes,
@@ -642,8 +971,9 @@ const ProductsPage = () => {
 
   // Handler para otros materiales
   const handleOtroChange = (idx, field, value) => {
-    setDetailProduct(prev => {
-      let newOtros = [...(prev.componentes?.otros || [])];
+    withHistory(prev => {
+      const newOtros = [...(prev.componentes?.otros || [])];
+      if (!newOtros[idx]) return prev;
       let newVal = value;
       if (field === 'precioUnitario') newVal = round2(value);
       const otro = { ...newOtros[idx], [field]: newVal };
@@ -668,7 +998,7 @@ const ProductsPage = () => {
   };
 
   const addOtroRow = () => {
-    setDetailProduct(prev => ({
+    withHistory(prev => ({
       ...prev,
       componentes: {
         ...prev.componentes,
@@ -684,115 +1014,31 @@ const ProductsPage = () => {
     }));
   };
 
-  const handleRemoveOtro = async (idx) => {
-    try {
-      const newOtros = (detailProduct.componentes?.otros || []).filter((_, i) => i !== idx);
-      const payload = {
-        ...detailProduct,
-        componentes: {
-          ...detailProduct.componentes,
-          otros: newOtros,
-        }
-      };
-      await fetch(`/api/products/${detailProduct.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      setDetailProduct(prev => ({
+  const handleRemoveOtro = (idx) => {
+    withHistory(prev => {
+      const newOtros = (prev.componentes?.otros || []).filter((_, i) => i !== idx);
+      return {
         ...prev,
         componentes: {
           ...prev.componentes,
-          otros: newOtros,
+          otros: newOtros
         }
-      }));
-      setRefresh(prev => prev + 1);
-    } catch (err) {
-      console.error('Error removing otro material:', err);
-    }
+      };
+    });
   };
 
   // Handler to remove a tela row and persist deletion immediately
-  const handleRemoveTela = async (idx) => {
-    try {
-      const newTelas = detailProduct.componentes.telas.filter((_, i) => i !== idx);
-      const payload = {
-        ...detailProduct,
-        componentes: {
-          ...detailProduct.componentes,
-          telas: newTelas
-        }
-      };
-      await fetch(`/api/products/${detailProduct.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      setDetailProduct(prev => ({
+  const handleRemoveTela = (idx) => {
+    withHistory(prev => {
+      const newTelas = (prev.componentes?.telas || []).filter((_, i) => i !== idx);
+      return {
         ...prev,
         componentes: {
           ...prev.componentes,
           telas: newTelas
         }
-      }));
-      setRefresh(prev => prev + 1);
-    } catch (err) {
-      console.error('Error removing tela:', err);
-    }
-  };
-
-  // Save updated product detail to backend
-  const saveDetail = async () => {
-    try {
-      // exclude any tela rows without a chosen component
-      // Build modifiers object from priceAdjustments (percent → fraction)
-      const modifiersObj = (detailProduct?.priceAdjustments || [])
-        .filter(a => (a?.name || '').trim().length > 0)
-        .reduce((acc, a) => {
-          const key = String(a.name).trim();
-          const frac = Number.isFinite(Number(a.percent)) ? Number(a.percent) / 100 : 0;
-          acc[key] = Number(frac.toFixed(4));
-          return acc;
-        }, {});
-
-      const payload = {
-        ...detailProduct,
-        componentes: {
-          ...detailProduct.componentes,
-          telas: (detailProduct.componentes?.telas || []).filter(t => t.componentId),
-          otros: (detailProduct.componentes?.otros || [])
-            .filter(o => o.componentId)
-            .map(o => ({
-              ...o,
-              // Persistimos una marca para evitar doble conteo en listados/ventas
-              tagConfeccion: isConfeccionName(otherById[o.componentId]?.name)
-            }))
-        },
-        // Normaliza estructura de ajustes para guardar en DB
-        priceAdjustments: (detailProduct?.priceAdjustments || []).map(a => ({
-          name: a?.name || '',
-          percent: Number.isFinite(Number(a?.percent)) ? Number(a.percent) : 0
-        })),
-        // Sincroniza también los modificadores dentro de pricing y a nivel raíz (compatibilidad)
-        pricing: {
-          ...(detailProduct?.pricing || {}),
-          modificadores: modifiersObj
-        },
-        // Guarda costoConfeccion efectivo (sumatoria si hay filas de confección)
-        costoConfeccion: costoConfeccionEffective,
-        modificadores: modifiersObj
       };
-      await fetch(`/api/products/${detailProduct.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      // Close modal and refresh product list
-      setShowDetailModal(false);
-      setRefresh(prev => prev + 1);
-    } catch (err) {
-      console.error('Error saving detail:', err);
-    }
+    });
   };
 
   // Totales calculados (excluyendo confección de "otros" si corresponde)
@@ -821,19 +1067,19 @@ const ProductsPage = () => {
 
   // Ajustes porcentuales por producto (persistentes)
   const addAdjustment = () => {
-    setDetailProduct(prev => ({
+    withHistory(prev => ({
       ...prev,
       priceAdjustments: [ ...(prev?.priceAdjustments || []), { name: '', percent: 0 } ]
     }));
   };
   const removeAdjustment = (idx) => {
-    setDetailProduct(prev => ({
+    withHistory(prev => ({
       ...prev,
       priceAdjustments: (prev?.priceAdjustments || []).filter((_, i) => i !== idx)
     }));
   };
   const updateAdjustment = (idx, field, value) => {
-    setDetailProduct(prev => ({
+    withHistory(prev => ({
       ...prev,
       priceAdjustments: (prev?.priceAdjustments || []).map((row, i) => {
         if (i !== idx) return row;
@@ -875,7 +1121,7 @@ const ProductsPage = () => {
       {showDetailModal && (
         <>
           <div style={overlayFade(detailClosing)} onClick={closeDetailModal} />
-          <div style={detailModalAnimStyle}>
+          <div style={detailModalAnimStyle} className="product-detail-modal">
             <button style={closeButtonStyle} onClick={closeDetailModal}>X</button>
             <div style={{ width: '90%', margin: '0 auto', marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <h2 style={{ margin: 0, textAlign: 'left' }}>{detailProduct.name}</h2>
@@ -1289,26 +1535,30 @@ const ProductsPage = () => {
                     <div
                       style={{
                         width: isCompactDesktop ? '100%' : 260,
-                        maxWidth: isCompactDesktop ? '100%' : 280,
+                        maxWidth: isCompactDesktop ? 360 : 280,
                         margin: isCompactDesktop ? '0 auto' : 0,
-                        justifySelf: isCompactDesktop ? 'center' : 'end'
+                        justifySelf: isCompactDesktop ? 'center' : 'end',
+                        display: 'flex',
+                        justifyContent: 'center'
                       }}
                     >
                       {detailProduct?.image ? (
                         <div style={{
                           width: '100%',
+                          maxWidth: '100%',
                           border: '1px solid #ccc',
                           borderRadius: 6,
                           background: '#f5f5f5',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          padding: 8
+                          padding: 8,
+                          maxHeight: 340
                         }}>
                           <img
                             src={detailProduct.image}
                             alt={detailProduct.name}
-                            style={{ width: '100%', height: 'auto', objectFit: 'contain', borderRadius: 4 }}
+                            style={{ width: '100%', height: 'auto', maxHeight: 320, objectFit: 'contain', borderRadius: 4 }}
                           />
                         </div>
                       ) : (
@@ -1336,38 +1586,26 @@ const ProductsPage = () => {
                   margin: '0 auto',
                   padding: (isMobile || isCompactDesktop) ? '0 10px' : 0
                 }}>
-                  {/* Costo de confección */}
-                  <div style={{ width: '100%', marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontWeight: 'bold' }}>Costo Confección</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={costoConfeccionEffective ?? ''}
-                      onChange={e => {
-                        const v = e.target.value;
-                        setDetailProduct(prev => ({
-                          ...prev,
-                          costoConfeccion: v === '' ? null : round2(parseFloat(v))
-                        }));
-                      }}
-                      disabled={hasConfeccionRows}
-                      style={{ width: '100%', opacity: hasConfeccionRows ? 0.6 : 1 }}
-                    />
-                  </div>
-
                   {/* Totales */}
                   <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
                     <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total otros materiales</label>
+                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (confección)</label>
+                      <input type="text" value={`$ ${fmt2(costoConfeccionEffective)}`} disabled style={{ width: '100%' }} />
+                    </div>
+                    <div style={{ flex: '1 1 260px' }}>
+                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas)</label>
+                      <input type="text" value={`$ ${fmt2(telasTotal)}`} disabled style={{ width: '100%' }} />
+                    </div>
+                    <div style={{ flex: '1 1 260px' }}>
+                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (otros materiales)</label>
                       <input type="text" value={`$ ${fmt2(otrosNoConfeccionTotal)}`} disabled style={{ width: '100%' }} />
                     </div>
                     <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total del producto</label>
+                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales)</label>
                       <input type="text" value={`$ ${fmt2(productoTotal)}`} disabled style={{ width: '100%' }} />
                     </div>
                     <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total del producto + Confección</label>
+                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales + confección)</label>
                       <input type="text" value={`$ ${fmt2(totalConConfeccion)}`} disabled style={{ width: '100%' }} />
                     </div>
                   </div>
@@ -1376,8 +1614,8 @@ const ProductsPage = () => {
                   <h3 style={{ width: '100%', margin: 0, textAlign: 'left', marginTop: '8px', marginBottom: '8px' }}>Precio corregido porcentualmente</h3>
                   <div style={{ overflowX: (isMobile || isCompactDesktop) ? 'auto' : 'visible' }}>
                     <table style={{
-                      width: isMobile ? '620px' : '100%',
-                      minWidth: (!isMobile && isCompactDesktop) ? '720px' : undefined,
+                      width: isMobile ? '820px' : '100%',
+                      minWidth: (!isMobile && isCompactDesktop) ? '920px' : undefined,
                       marginBottom: '16px',
                       borderCollapse: 'separate',
                       borderSpacing: '4px',
@@ -1387,13 +1625,17 @@ const ProductsPage = () => {
                       <tr>
                         <th style={{ border: '1px solid #ccc', padding: '6px' }}>Nombre</th>
                         <th style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right', width: '120px' }}>%</th>
-                        <th style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right', width: '180px' }}>Precio</th>
-                        <th style={{ border: '1px solid #ccc', padding: '6px', width: '120px' }}>Acciones</th>
+                        <th style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right', width: '210px' }}>Precio (telas + otros materiales)</th>
+                        <th style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right', width: '230px' }}>Precio (telas + otros materiales + confección)</th>
+                        <th style={{ border: '1px solid #ccc', padding: '6px', width: '140px' }}>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(detailProduct?.priceAdjustments || []).map((row, idx) => {
-                        const corrected = round2(productoTotal * (1 + (Number(row.percent) || 0) / 100));
+                        const percentValue = Number(row.percent) || 0;
+                        const multiplier = 1 + percentValue / 100;
+                        const corrected = round2(productoTotal * multiplier);
+                        const correctedWithConfeccion = round2(totalConConfeccion * multiplier);
                         return (
                           <tr key={`adj-${idx}`}>
                             <td style={{ border: '1px solid #ccc', padding: '6px' }}>
@@ -1405,6 +1647,9 @@ const ProductsPage = () => {
                             <td style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right' }}>
                               <input type="text" value={`$ ${fmt2(corrected)}`} disabled />
                             </td>
+                            <td style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right' }}>
+                              <input type="text" value={`$ ${fmt2(correctedWithConfeccion)}`} disabled />
+                            </td>
                             <td style={{ border: '1px solid #ccc', padding: '6px' }}>
                               <button onClick={() => removeAdjustment(idx)}>- Eliminar</button>
                             </td>
@@ -1414,13 +1659,34 @@ const ProductsPage = () => {
                     </tbody>
                     </table>
                   </div>
-                  <div style={{ width: '100%', marginBottom: '16px' }}>
+                  <div style={{ width: '100%', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                     <button onClick={addAdjustment}>+ Agregar ajuste</button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        disabled={!canUndo}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: 4,
+                          border: '1px solid #ccc',
+                          backgroundColor: canUndo ? '#f3f3f3' : '#e0e0e0',
+                          cursor: canUndo ? 'pointer' : 'not-allowed'
+                        }}
+                      >
+                        Deshacer último cambio
+                      </button>
+                      <span style={{ fontSize: 13, color: saveError ? '#b00020' : '#555' }}>
+                        {saveError
+                          ? 'No se pudo guardar automáticamente. Intenta de nuevo.'
+                          : isSaving
+                            ? 'Guardando cambios...'
+                            : lastSavedAt
+                              ? `Último guardado ${new Date(lastSavedAt).toLocaleTimeString()}`
+                              : 'Guardado automático (cerrar esta ventana para que se persistan los cambios)'}
+                      </span>
+                    </div>
                   </div>
-
-                  <div style={{ width: '100%' }}>
-                    <button onClick={saveDetail}>Guardar Cambios</button>
-                </div>
               </div>
             </div>
           </div>

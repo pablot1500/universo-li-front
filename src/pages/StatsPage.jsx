@@ -226,7 +226,7 @@ const StatsPage = () => {
           <span>{suffix === 'u' ? `${value} u` : `$ ${value.toFixed(2)}`}</span>
         </div>
         <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: 'rgba(0,153,255,0.7)', borderRadius: 6 }} />
+          <div style={{ width: `${pct}%`, height: '100%', background: 'rgba(248,168,201,0.7)', borderRadius: 6 }} />
         </div>
       </div>
     );

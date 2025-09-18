@@ -45,7 +45,7 @@ const SalesPage = () => {
     width: '60px',
     height: '60px',
     borderRadius: '50%',
-    backgroundColor: 'rgba(0,153,255,0.7)',
+    backgroundColor: 'rgba(248,168,201,0.7)',
     color: '#fff',
     fontSize: '36px',
     border: 'none',

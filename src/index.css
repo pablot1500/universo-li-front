@@ -92,12 +92,12 @@ h1, h2, h3 {
 }
 
 .form-input:focus {
-  border-color: #4a90e2;
+  border-color: #f48fb1;
   outline: none;
 }
 
 .form-button {
-  background-color: #4a90e2;
+  background-color: #f8a8c9;
   color: #fff;
   padding: 10px 16px;
   border: none;
@@ -108,7 +108,7 @@ h1, h2, h3 {
 }
 
 .form-button:hover {
-  background-color: #357abd;
+  background-color: #f48fb1;
 }
 
 .page-title {
@@ -133,7 +133,7 @@ h1, h2, h3 {
 }
 
 .nav-button {
-  background-color: #4a90e2;
+  background-color: #f8a8c9;
   color: white;
   padding: 14px 24px;
   font-size: 1.1rem;
@@ -147,7 +147,7 @@ h1, h2, h3 {
 }
 
 .nav-button:hover {
-  background-color: #357abd;
+  background-color: #f48fb1;
   transform: translateY(-2px);
 }
 
@@ -160,6 +160,28 @@ h1, h2, h3 {
 
 .product-card {
   width: 48%;
+}
+
+.product-detail-modal input:disabled,
+.product-detail-modal textarea:disabled,
+.product-detail-modal select:disabled {
+  background-color: #fff8d6;
+  color: #555;
+}
+
+.product-name-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.product-name-button:hover,
+.product-name-button:focus {
+  text-decoration: underline;
 }
 
 @media (max-width: 640px) {

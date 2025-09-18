@@ -115,6 +115,10 @@ const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeletePr
     });
   };
 
+  const handleOpenDetail = (product) => {
+    if (onSelectProduct) onSelectProduct(product);
+  };
+
   const fetchProducts = async () => {
     try {
       const res = await fetch('/api/products');
@@ -186,7 +190,11 @@ const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeletePr
               >
                 {/* contenido interno de la tarjeta */}
                 <div>
-                  <h3><strong>{product.name}</strong></h3>
+                  <h3>
+                    <button type="button" className="product-name-button" onClick={() => handleOpenDetail(product)}>
+                      <strong>{product.name}</strong>
+                    </button>
+                  </h3>
                   {(() => {
                     const { totalConConfeccion, hasAny } = computeTotals(product);
                     if (hasAny || totalConConfeccion > 0) return (<p>Precio: ${totalConConfeccion.toFixed(2)}</p>);
@@ -279,7 +287,11 @@ const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeletePr
                     >
                       {/* contenido interno de la tarjeta */}
                       <div>
-                        <h3><strong>{product.name}</strong></h3>
+                        <h3>
+                          <button type="button" className="product-name-button" onClick={() => handleOpenDetail(product)}>
+                            <strong>{product.name}</strong>
+                          </button>
+                        </h3>
                         {(() => {
                           const { totalConConfeccion, hasAny } = computeTotals(product);
                           if (hasAny || totalConConfeccion > 0) return (<p>Precio: ${totalConConfeccion.toFixed(2)}</p>);
