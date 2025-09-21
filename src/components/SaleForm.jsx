@@ -292,8 +292,8 @@ const SaleForm = ({ onSaleAdded }) => {
               <p><strong>Producto:</strong> {selectedProduct?.name || productId}</p>
               <p><strong>Categoría:</strong> {category}</p>
               <p><strong>Cantidad:</strong> {qtyNum}</p>
-              <p><strong>Precio Unit:</strong> ${priceNum.toFixed(2)}</p>
-              <p><strong>Ganancia Unit:</strong> ${gananciaNum.toFixed(2)}</p>
+              <p><strong>Precio (Unidad):</strong> ${priceNum.toFixed(2)}</p>
+              <p><strong>Ganancia (unidad):</strong> ${gananciaNum.toFixed(2)}</p>
               <p><strong>Total:</strong> {(qtyNum * (priceNum + gananciaNum)).toFixed(2)}</p>
               <p><strong>Cliente:</strong> {customerName || '—'}</p>
               <p><strong>Fecha:</strong> {date}</p>

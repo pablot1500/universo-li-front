@@ -7,6 +7,7 @@ const ComponentForm = ({ mode, initialValues = {}, onComponentSubmit }) => {
     category: '',
     available: '',
     link: '',
+    unitDivisor: 1,
     ...initialValues
   });
   const [categories, setCategories] = useState([]);
@@ -20,6 +21,7 @@ const ComponentForm = ({ mode, initialValues = {}, onComponentSubmit }) => {
       category: '',
       available: '',
       link: '',
+      unitDivisor: 1,
       ...initialValues
     });
   }, [initialValues]);
@@ -61,8 +63,9 @@ const ComponentForm = ({ mode, initialValues = {}, onComponentSubmit }) => {
       name: formData.name,
       price: parseFloat(formData.price),
       category: formData.category,
-      available: parseInt(formData.available, 10),
-      link: formData.link
+      available: parseFloat(formData.available),
+      link: formData.link,
+      unitDivisor: Number.isFinite(Number(formData.unitDivisor)) && Number(formData.unitDivisor) > 0 ? Number(formData.unitDivisor) : 1
     });
   };
 
@@ -82,8 +85,39 @@ const ComponentForm = ({ mode, initialValues = {}, onComponentSubmit }) => {
         />
       </div>
       <div style={{ marginBottom: '16px' }}>
+        <label style={{ display: 'block', marginBottom: 6 }}>Divisor del precio (fijo):</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            name="unitDivisor"
+            type="number"
+            min="1"
+            step="1"
+            value={formData.unitDivisor ?? 1}
+            onChange={handleChange}
+            style={{ width: 120, padding: '10px', fontSize: '16px', boxSizing: 'border-box' }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[10, 20, 50, 100].map((v) => (
+              <button type="button" key={v} onClick={() => setFormData(prev => ({ ...prev, unitDivisor: v }))}>
+                /{v}
+              </button>
+            ))}
+            <button type="button" onClick={() => setFormData(prev => ({ ...prev, unitDivisor: 1 }))}>
+              Quitar divisor
+            </button>
+          </div>
+        </div>
+        <div style={{ marginTop: 8, color: '#555' }}>
+          Precio efectivo usado en productos: $ {(() => {
+            const p = Number(formData.price);
+            const d = Number(formData.unitDivisor) || 1;
+            return Number.isFinite(p) ? (p / (d > 0 ? d : 1)).toFixed(2) : '0.00';
+          })()}
+        </div>
+      </div>
+      <div style={{ marginBottom: '16px' }}>
         <label style={{ display: 'block', marginBottom: 6 }}>
-          {formData.category.toLowerCase() === 'telas' ? 'Precio por Metro:' : 'Precio unitario:'}
+          {(formData.category || '').toLowerCase() === 'telas' ? 'Precio por Metro:' : 'Precio unitario:'}
         </label>
         <input
           name="price"
@@ -135,10 +169,14 @@ const ComponentForm = ({ mode, initialValues = {}, onComponentSubmit }) => {
         )}
       </div>
       <div style={{ marginBottom: '16px' }}>
-        <label style={{ display: 'block', marginBottom: 6 }}>Cantidad Disponible:</label>
+        <label style={{ display: 'block', marginBottom: 6 }}>
+          {(formData.category || '').toLowerCase() === 'telas' ? 'Cantidad Disponible (metros):' : 'Cantidad Disponible:'}
+        </label>
         <input
           name="available"
           type="number"
+          min="0"
+          step="0.01"
           value={formData.available}
           onChange={handleChange}
           required

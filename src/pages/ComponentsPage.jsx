@@ -63,6 +63,7 @@ const ComponentsPage = () => {
     fetchComponents();
   }, []);
 
+
   useEffect(() => {
     const onScroll = () => {
       try {
@@ -495,6 +496,7 @@ const ComponentsPage = () => {
       {/* Lista con búsqueda dinámica */}
       <ComponentList 
         components={components}
+        viewMode={'rows'}
         onEditComponent={handleEditComponent}
         onCopyComponent={handleCopyComponent}
         onDeleteComponent={handleDeleteComponent}

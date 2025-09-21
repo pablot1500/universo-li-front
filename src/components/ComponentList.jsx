@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 
 const ComponentList = ({
   components,
+  viewMode = 'grid',
   onEditComponent,
   onCopyComponent,
   onDeleteComponent,
@@ -12,8 +13,37 @@ const ComponentList = ({
   onBulkCategoryUpdate
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  // Divisor drafts por componente (input editable)
+  const [divisorDrafts, setDivisorDrafts] = useState({});
+  const getDivisorDraft = (component) => {
+    const current = divisorDrafts[component.id];
+    if (current != null && current !== '') return current;
+    const d = Number(component?.unitDivisor);
+    return Number.isFinite(d) && d > 0 ? d : 1;
+  };
+  const setDivisorDraftFor = (id, val) => setDivisorDrafts(prev => ({ ...prev, [id]: val }));
+  const saveDivisor = async (component, valueOverride) => {
+    try {
+      const raw = valueOverride != null ? valueOverride : getDivisorDraft(component);
+      const n = Number(raw);
+      const divisor = Number.isFinite(n) && n > 0 ? Math.round(n) : 1;
+      await fetch(`/api/components/${component.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...component, unitDivisor: divisor })
+      });
+      if (typeof refreshComponents === 'function') refreshComponents();
+    } catch (e) { console.error('No se pudo guardar el divisor', e); }
+  };
 
   const cap = (s) => (typeof s === 'string' && s.length) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  const getAvailableInfo = (component) => {
+    const isTela = (component?.category || '').toLowerCase() === 'telas';
+    const availableNumber = Number(component?.available);
+    const formatted = Number.isFinite(availableNumber) ? availableNumber.toFixed(2) : '0.00';
+    return {
+      label: isTela ? 'Disponible (metros)' : 'Disponible',
+      value: formatted
+    };
+  };
 
   // Estado para comentarios por categoría
   const [showComments, setShowComments] = useState(false);
@@ -186,6 +216,150 @@ const ComponentList = ({
     c.category && c.category.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const [expanded, setExpanded] = useState(() => new Set());
+  const isExpanded = (id) => expanded.has(id);
+  const toggleExpanded = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const collapseStyle = (open) => ({
+    overflow: 'hidden',
+    maxHeight: open ? 1000 : 0,
+    opacity: open ? 1 : 0,
+    transition: 'max-height 220ms ease, opacity 220ms ease'
+  });
+
+  // Render tarjeta completa de componente (reuso en vista por filas)
+  const renderComponentCard = (component) => {
+    const { label: availableLabel, value: availableValue } = getAvailableInfo(component);
+    const divisor = Number(component?.unitDivisor) > 0 ? Number(component.unitDivisor) : 1;
+    const priceNumber = Number(component?.price);
+    const availableNumber = Number(component?.available);
+    const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
+    const effectivePrice = Number.isFinite(priceNumber) ? (priceNumber / (divisor || 1)) : NaN;
+    const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
+    const totalValue = (Number.isFinite(priceNumber) && Number.isFinite(availableNumber))
+      ? (priceNumber * availableNumber).toFixed(2)
+      : '0.00';
+    return (
+      <div className="card" style={{ marginBottom: '16px' }}>
+        <h3>{cap(component.name)}</h3>
+        <p>
+          {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
+          <br/>
+          Divisor: x{divisor} — Precio efectivo: ${effectiveFormatted}
+        </p>
+        <p>Categoría: {component.category}</p>
+        <p>{availableLabel}: {availableValue}</p>
+        <p>Valor total: ${totalValue}</p>
+        <p>
+          Link Casanacho: {component.link ? (
+            visibleLinks && visibleLinks[component.id] ? (
+              <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
+            ) : (
+              <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
+            )
+          ) : <span style={{ color: '#aaa' }}>no seleccionado / no disponible</span>}
+        </p>
+        <button className="card-button" style={{ marginRight: '8px' }} onClick={() => onEditComponent(component)}>Editar</button>
+        <button className="card-button" style={{ marginRight: '8px' }} onClick={() => onCopyComponent(component)}>Copiar</button>
+        <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={getDivisorDraft(component)}
+            onChange={e => setDivisorDraftFor(component.id, e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
+            style={{ width: 80 }}
+          />
+          <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
+          <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
+        </div>
+        <button className="card-button" style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }} onClick={() => onAutocompletePrice(component)} disabled={!component.link} title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}>
+          Autocompletar Precio
+        </button>
+        <button className="card-button" onClick={() => onDeleteComponent(component)}>Eliminar</button>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => toggleExpanded(component.id)}>Replegar</button>
+        </div>
+      </div>
+    );
+  };
+
+  if (viewMode === 'rows') {
+    // Vista por filas
+    return (
+      <div>
+        <div style={{ marginBottom: '16px' }}>
+          <input type="text" placeholder="Buscar componente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }} />
+        </div>
+        {searchTerm && !isCategorySearch ? (
+          Object.entries(
+            filtered.reduce((acc, comp) => {
+              const category = comp.category || 'Sin categoría';
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(comp);
+              return acc;
+            }, {})
+          )
+          .sort(([a],[b]) => a.localeCompare(b))
+          .map(([category, comps]) => (
+            <div key={category} style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              {comps
+                .slice()
+                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                .map(component => (
+                  <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
+                      <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                      <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
+                    </div>
+                    <div style={collapseStyle(isExpanded(component.id))}>
+                      {renderComponentCard(component)}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          ))
+        ) : (
+          Object.entries(
+            filtered.reduce((acc, comp) => {
+              const category = comp.category || 'Sin categoría';
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(comp);
+              return acc;
+            }, {})
+          )
+          .sort(([a],[b]) => a.localeCompare(b))
+          .map(([category, comps]) => (
+            <div key={category} style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              {comps
+                .slice()
+                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                .map(component => (
+                <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
+                    <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
+                  </div>
+                  <div style={collapseStyle(isExpanded(component.id))}>
+                    {renderComponentCard(component)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Barra de búsqueda que ocupa todo el ancho */}
@@ -202,55 +376,83 @@ const ComponentList = ({
       {/* Lista de componentes filtrados */}
       <div style={{ display: 'block' }}>
         {searchTerm && !isCategorySearch
-          ? filtered.map(component => (
-              <div key={component.id} className="card" style={{ marginBottom: '16px' }}>
-                <h3>{cap(component.name)}</h3>
-                <p>
-                  {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${parseFloat(component.price).toFixed(2)}
-                </p>
-                <p>Categoría: {component.category}</p>
-                <p>Disponible: {component.available}</p>
-                <p>Valor total: ${(component.price * component.available).toFixed(2)}</p>
-                <p>
-                  Link Casanacho: {component.link ? (
-                    visibleLinks && visibleLinks[component.id] ? (
-                      <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
-                    ) : (
-                      <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
-                    )
-                  ) : <span style={{ color: '#aaa' }}>no seleccionado / no disponible</span>}
-                </p>
-                <button
-                  className="card-button"
-                  style={{ marginRight: '8px' }}
-                  onClick={() => onEditComponent(component)}
-                >
-                  Editar
-                </button>
-                <button
-                  className="card-button"
-                  style={{ marginRight: '8px' }}
-                  onClick={() => onCopyComponent(component)}
-                >
-                  Copiar
-                </button>
-                <button
-                  className="card-button"
-                  style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
-                  onClick={() => onAutocompletePrice(component)}
-                  disabled={!component.link}
-                  title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
-                >
-                  Autocompletar Precio
-                </button>
-                <button
-                  className="card-button"
-                  onClick={() => onDeleteComponent(component)}
-                >
-                  Eliminar
-                </button>
-              </div>
-            ))
+          ? filtered.map(component => {
+              const { label: availableLabel, value: availableValue } = getAvailableInfo(component);
+              const priceNumber = Number(component?.price);
+              const availableNumber = Number(component?.available);
+              const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
+              const totalValue = (Number.isFinite(priceNumber) && Number.isFinite(availableNumber))
+                ? (priceNumber * availableNumber).toFixed(2)
+                : '0.00';
+              const divisor = Number(component?.unitDivisor) > 0 ? Number(component.unitDivisor) : 1;
+              const effectivePrice = Number(component?.price) / (divisor || 1);
+              const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
+              return (
+                <div key={component.id} className="card" style={{ marginBottom: '16px' }}>
+                  <h3>{cap(component.name)}</h3>
+                  <p>
+                    {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
+                    <br/>
+                    Divisor: x{divisor} — Precio efectivo: ${effectiveFormatted}
+                  </p>
+                  <p>Categoría: {component.category}</p>
+                  <p>{availableLabel}: {availableValue}</p>
+                  <p>Valor total: ${totalValue}</p>
+                  <p>
+                    Link Casanacho: {component.link ? (
+                      visibleLinks && visibleLinks[component.id] ? (
+                        <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
+                      ) : (
+                        <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
+                      )
+                    ) : <span style={{ color: '#aaa' }}>no seleccionado / no disponible</span>}
+                  </p>
+                  <button
+                    className="card-button"
+                    style={{ marginRight: '8px' }}
+                    onClick={() => onEditComponent(component)}
+                  >
+                    Editar
+                  </button>
+                  <button
+                    className="card-button"
+                    style={{ marginRight: '8px' }}
+                    onClick={() => onCopyComponent(component)}
+                  >
+                    Copiar
+                  </button>
+                  <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={getDivisorDraft(component)}
+                      onChange={e => setDivisorDraftFor(component.id, e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
+                      style={{ width: 80 }}
+                    />
+                    <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
+                    <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
+                  </div>
+                  <button
+                    className="card-button"
+                    style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
+                    onClick={() => onAutocompletePrice(component)}
+                    disabled={!component.link}
+                    title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
+                  >
+                    Autocompletar Precio
+                  </button>
+                  <button
+                    className="card-button"
+                    onClick={() => onDeleteComponent(component)}
+                  >
+                    Eliminar
+                  </button>
+                </div>
+              );
+            })
           : Object.entries(
               filtered.reduce((acc, comp) => {
                 const category = comp.category || 'Sin categoría';
@@ -292,58 +494,91 @@ const ComponentList = ({
                     </h2>
                   )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-                    {comps.map(component => (
-                      <div key={component.id} className="card" style={{ width: '48%', marginBottom: '16px' }}>
-                        <h3>{cap(component.name)}</h3>
-                        <p>
-                          {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${parseFloat(component.price).toFixed(2)}
-                        </p>
-                        <p>Categoría: {component.category}</p>
-                        <p>Disponible: {component.available}</p>
-                        <p>Valor total: ${(component.price * component.available).toFixed(2)}</p>
-                        <p>
-                          Link Casanacho: {component.link ? (
-                            visibleLinks && visibleLinks[component.id] ? (
-                              <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
-                            ) : (
-                              <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
-                            )
-                          ) : <span style={{ color: '#aaa' }}>No seleccionado / no disponible</span>}
-                        </p>
-                        <button
-                          className="card-button"
-                          style={{ marginRight: '8px' }}
-                          onClick={() => onEditComponent(component)}
-                        >
-                          Editar
-                        </button>
-                        <button
-                          className="card-button"
-                          style={{ marginRight: '8px' }}
-                          onClick={() => onCopyComponent(component)}
-                        >
-                          Copiar
-                        </button>
-                        <button
-                          className="card-button"
-                          style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
-                          onClick={() => onAutocompletePrice(component)}
-                          disabled={!component.link}
-                          title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
-                        >
-                          Autocompletar Precio
-                        </button>
-                        <button
-                          className="card-button"
-                          onClick={() => onDeleteComponent(component)}
-                        >
-                          Eliminar
-                        </button>
-                      </div>
-                    ))}
+                    {comps.map(component => {
+                      const { label: availableLabel, value: availableValue } = getAvailableInfo(component);
+                      const divisor = Number(component?.unitDivisor) > 0 ? Number(component.unitDivisor) : 1;
+                      const priceNumber = Number(component?.price);
+                      const availableNumber = Number(component?.available);
+                      const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
+                      const effectivePrice = Number.isFinite(priceNumber) ? (priceNumber / (divisor || 1)) : NaN;
+                      const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
+                      const totalValue = (Number.isFinite(priceNumber) && Number.isFinite(availableNumber))
+                        ? (priceNumber * availableNumber).toFixed(2)
+                        : '0.00';
+                      return (
+                        <div key={component.id} className="card" style={{ width: '48%', marginBottom: '16px' }}>
+                          <h3>{cap(component.name)}</h3>
+                          <p>
+                            {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
+                            <br/>
+                            Divisor: x{divisor} — Precio efectivo: ${effectiveFormatted}
+                          </p>
+                          <p>Categoría: {component.category}</p>
+                          <p>{availableLabel}: {availableValue}</p>
+                          <p>Valor total: ${totalValue}</p>
+                          <p>
+                            Link Casanacho: {component.link ? (
+                              visibleLinks && visibleLinks[component.id] ? (
+                                <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
+                              ) : (
+                                <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
+                              )
+                            ) : <span style={{ color: '#aaa' }}>No seleccionado / no disponible</span>}
+                          </p>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px' }}
+                            onClick={() => onEditComponent(component)}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px' }}
+                            onClick={() => onCopyComponent(component)}
+                          >
+                            Copiar
+                          </button>
+                          <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={getDivisorDraft(component)}
+                              onChange={e => setDivisorDraftFor(component.id, e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
+                              style={{ width: 80 }}
+                            />
+                            <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
+                            <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
+                          </div>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
+                            onClick={() => onAutocompletePrice(component)}
+                            disabled={!component.link}
+                            title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
+                          >
+                            Autocompletar Precio
+                          </button>
+                          <button
+                            className="card-button"
+                            onClick={() => onDeleteComponent(component)}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                   <p style={{ fontWeight: 'bold', marginTop: '8px' }}>
-                    Total comprado para categoría {category}: ${comps.reduce((sum, c) => sum + (c.price * c.available), 0).toFixed(2)}
+                    Total comprado para categoría {category}: ${comps.reduce((sum, c) => {
+                      const price = Number(c?.price);
+                      const available = Number(c?.available);
+                      if (!Number.isFinite(price) || !Number.isFinite(available)) return sum;
+                      return sum + (price * available);
+                    }, 0).toFixed(2)}
                   </p>
                 </div>
               ))}

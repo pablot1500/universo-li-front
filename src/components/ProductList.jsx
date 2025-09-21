@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeleteProduct }) => {
+const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopyProduct, onDeleteProduct }) => {
   const [products, setProducts] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -167,6 +167,140 @@ const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeletePr
   //   }
   // };
 
+  const [expanded, setExpanded] = useState(() => new Set());
+  const isExpanded = (id) => expanded.has(id);
+  const toggleExpanded = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const collapseStyle = (open) => ({ overflow: 'hidden', maxHeight: open ? 1200 : 0, opacity: open ? 1 : 0, transition: 'max-height 240ms ease, opacity 240ms ease' });
+
+  const renderProductCard = (product) => (
+    <div
+      key={product.id}
+      className={viewMode === 'rows' ? 'card' : 'card product-card'}
+      style={{ display: 'flex', justifyContent: 'space-between', padding: '16px', boxSizing: 'border-box' }}
+    >
+      <div>
+        <h3>
+          <button type="button" className="product-name-button" onClick={() => handleOpenDetail(product)}>
+            <strong>{product.name}</strong>
+          </button>
+        </h3>
+        {(() => {
+          const { totalConConfeccion, hasAny } = computeTotals(product);
+          if (hasAny || totalConConfeccion > 0) return (<p>Precio: ${totalConConfeccion.toFixed(2)}</p>);
+          return (<p style={{ color: '#aaa' }}>Definir los materiales del producto para ver el precio</p>);
+        })()}
+        <p>Categoría: {product.category}</p>
+        <p>Disponible: {product.available}</p>
+        <button style={{ marginRight: '8px' }} onClick={() => onEditProduct && onEditProduct(product)}>Editar</button>
+        <button style={{ marginRight: '8px' }} onClick={() => onCopyProduct && onCopyProduct(product)}>Copiar</button>
+        <button onClick={() => onDeleteProduct ? onDeleteProduct(product) : null}>Eliminar</button>
+      </div>
+      <div style={{ textAlign: 'center' }}>
+        <div
+          style={{
+            width: '100px', height: '100px', border: '1px solid #ccc', marginBottom: '8px', marginTop: '10px', marginLeft: '-5px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#ccc'
+          }}
+          onClick={() => openImage(product.image)}
+        >
+          {product.image ? (
+            <img src={product.image} alt={product.name} style={{ width: '100%', height: '100%', objectFit: 'contain', backgroundColor: '#ccc' }} />
+          ) : (
+            'Imagen'
+          )}
+        </div>
+        <input type="file" style={{ display: 'none' }} id={`file-input-${product.id}`} onChange={e => handleImageChange(e, product.id)} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '12px', gap: '12px' }}>
+          <button onClick={() => document.getElementById(`file-input-${product.id}`)?.click()}>Cargar Imagen</button>
+          <button onClick={() => onSelectProduct && onSelectProduct(product)}>Ver Detalle</button>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => toggleExpanded(product.id)}>Replegar</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (viewMode === 'rows') {
+    return (
+      <div>
+        <div style={{ marginBottom: '16px' }}>
+          <input
+            type="text"
+            placeholder="Buscar producto..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
+          />
+        </div>
+        {searchTerm && !isCategorySearch ? (
+          Object.entries(
+            filteredProducts.reduce((acc, p) => {
+              const category = p.category || 'Sin categoría';
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(p);
+              return acc;
+            }, {})
+          ).sort(([a],[b]) => a.localeCompare(b)).map(([category, prods]) => (
+            <div key={category} style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              {prods
+                .slice()
+                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                .map(product => (
+                <div key={product.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => toggleExpanded(product.id)}>
+                    <div style={{ width: 56, height: 56, border: '1px solid #ddd', background: '#f6f6f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {product.image ? <img src={product.image} alt={product.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+                    </div>
+                    <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(product.id) ? '▲' : '▼'}</div>
+                  </div>
+                  <div style={collapseStyle(isExpanded(product.id))}>
+                    {renderProductCard(product)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        ) : (
+          Object.entries(
+            filteredProducts.reduce((acc, p) => {
+              const category = p.category || 'Sin categoría';
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(p);
+              return acc;
+            }, {})
+          ).sort(([a],[b]) => a.localeCompare(b)).map(([category, prods]) => (
+            <div key={category} style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              {prods
+                .slice()
+                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                .map(product => (
+                <div key={product.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => toggleExpanded(product.id)}>
+                    <div style={{ width: 56, height: 56, border: '1px solid #ddd', background: '#f6f6f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {product.image ? <img src={product.image} alt={product.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+                    </div>
+                    <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(product.id) ? '▲' : '▼'}</div>
+                  </div>
+                  <div style={collapseStyle(isExpanded(product.id))}>
+                    {renderProductCard(product)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ marginBottom: '16px' }}>
@@ -183,11 +317,11 @@ const ProductList = ({ onSelectProduct, onEditProduct, onCopyProduct, onDeletePr
         {searchTerm && !isCategorySearch ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
             {filteredProducts.map(product => (
-              <div
-                key={product.id}
-                className="card product-card"
-                style={{ display: 'flex', justifyContent: 'space-between', padding: '16px', boxSizing: 'border-box' }}
-              >
+    <div
+      key={product.id}
+      className="card product-card"
+      style={{ display: 'flex', justifyContent: 'space-between', padding: '16px', boxSizing: 'border-box' }}
+    >
                 {/* contenido interno de la tarjeta */}
                 <div>
                   <h3>
