@@ -137,6 +137,22 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
     fetchProducts();
   }, []);
 
+  // Marcar/Desmarcar como destacado
+  const toggleFeatured = async (product) => {
+    try {
+      const payload = { ...product, featured: !product?.featured };
+      await fetch(`/api/products/${product.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      // Refrescar lista local para ver reflejado el toggle
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, featured: payload.featured } : p));
+    } catch (e) {
+      console.error('No se pudo actualizar el estado Destacado del producto', e);
+    }
+  };
+
   // Filtra productos por nombre o categoría (case-insensitive), evitando undefined
   const filteredProducts = products.filter(p => {
     const term = searchTerm.toLowerCase();
@@ -197,6 +213,9 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
         <p>Disponible: {product.available}</p>
         <button style={{ marginRight: '8px' }} onClick={() => onEditProduct && onEditProduct(product)}>Editar</button>
         <button style={{ marginRight: '8px' }} onClick={() => onCopyProduct && onCopyProduct(product)}>Copiar</button>
+        <button style={{ marginRight: '8px' }} onClick={() => toggleFeatured(product)}>
+          {product?.featured ? 'Dejar de destacar' : 'Destacar'}
+        </button>
         <button onClick={() => onDeleteProduct ? onDeleteProduct(product) : null}>Eliminar</button>
       </div>
       <div style={{ textAlign: 'center' }}>
@@ -236,6 +255,30 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
             style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
           />
         </div>
+        {/* Bloque Destacados (si hay) */}
+        {(() => {
+          const featured = filteredProducts.filter(p => !!p?.featured).slice().sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+          if (!featured.length) return null;
+          return (
+            <div style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>Destacados</h2>
+              {featured.map(product => (
+                <div key={product.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => toggleExpanded(product.id)}>
+                    <div style={{ width: 56, height: 56, border: '1px solid #ddd', background: '#f6f6f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {product.image ? <img src={product.image} alt={product.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+                    </div>
+                    <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(product.id) ? '▲' : '▼'}</div>
+                  </div>
+                  <div style={collapseStyle(isExpanded(product.id))}>
+                    {renderProductCard(product)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {searchTerm && !isCategorySearch ? (
           Object.entries(
             filteredProducts.reduce((acc, p) => {

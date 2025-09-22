@@ -115,6 +115,21 @@ const ComponentList = ({
   const [commentsClosing, setCommentsClosing] = useState(false);
   const [renameClosing, setRenameClosing] = useState(false);
 
+  // Marcar/Desmarcar como destacado
+  const toggleFeatured = async (component) => {
+    try {
+      const payload = { ...component, featured: !component?.featured };
+      await fetch(`/api/components/${component.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (typeof refreshComponents === 'function') refreshComponents();
+    } catch (e) {
+      console.error('No se pudo actualizar el estado Destacado del componente', e);
+    }
+  };
+
   const openComments = async (category, compsInCategory) => {
     try {
       setIsLoadingComments(true);
@@ -265,6 +280,9 @@ const ComponentList = ({
         </p>
         <button className="card-button" style={{ marginRight: '8px' }} onClick={() => onEditComponent(component)}>Editar</button>
         <button className="card-button" style={{ marginRight: '8px' }} onClick={() => onCopyComponent(component)}>Copiar</button>
+        <button className="card-button" style={{ marginRight: '8px' }} onClick={() => toggleFeatured(component)}>
+          {component?.featured ? 'Dejar de destacar' : 'Destacar'}
+        </button>
         <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
           <input
@@ -297,6 +315,27 @@ const ComponentList = ({
         <div style={{ marginBottom: '16px' }}>
           <input type="text" placeholder="Buscar componente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }} />
         </div>
+        {/* Bloque Destacados (si hay) */}
+        {(() => {
+          const featured = filtered.filter(c => !!c?.featured).slice().sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+          if (!featured.length) return null;
+          return (
+            <div style={{ marginBottom: 16 }}>
+              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>Destacados</h2>
+              {featured.map(component => (
+                <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
+                    <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
+                  </div>
+                  <div style={collapseStyle(isExpanded(component.id))}>
+                    {renderComponentCard(component)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {searchTerm && !isCategorySearch ? (
           Object.entries(
             filtered.reduce((acc, comp) => {
@@ -420,6 +459,13 @@ const ComponentList = ({
                     onClick={() => onCopyComponent(component)}
                   >
                     Copiar
+                  </button>
+                  <button
+                    className="card-button"
+                    style={{ marginRight: '8px' }}
+                    onClick={() => toggleFeatured(component)}
+                  >
+                    {component?.featured ? 'Dejar de destacar' : 'Destacar'}
                   </button>
                   <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
