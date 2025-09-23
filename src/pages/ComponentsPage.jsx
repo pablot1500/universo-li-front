@@ -238,7 +238,7 @@ const ComponentsPage = () => {
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...comp, price: newPrice }),
+            body: JSON.stringify({ ...comp, price: newPrice, autoPriceFailed: false }),
             signal: saveController.signal
           }
         );
@@ -265,6 +265,21 @@ const ComponentsPage = () => {
           status: 'error',
           error: String(error?.message || error)
         });
+        const aborted = error?.name === 'AbortError' || cancelRequested.current;
+        if (!aborted) {
+          try {
+            await fetch(
+              `${apiBase}/components/${comp.id}`,
+              {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...comp, autoPriceFailed: true })
+              }
+            );
+          } catch (flagError) {
+            console.error('No se pudo marcar el componente con error de autocompletado de precio:', flagError);
+          }
+        }
       } finally {
         // Limpiar controladores activos para evitar aborts posteriores
         activeControllers.current.price = null;
@@ -332,7 +347,7 @@ const ComponentsPage = () => {
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...comp, price: newPrice }),
+            body: JSON.stringify({ ...comp, price: newPrice, autoPriceFailed: false }),
             signal: saveController.signal
           }
         );
@@ -358,6 +373,21 @@ const ComponentsPage = () => {
           status: 'error',
           error: String(error?.message || error)
         });
+        const aborted = error?.name === 'AbortError' || cancelRequested.current;
+        if (!aborted) {
+          try {
+            await fetch(
+              `${apiBase}/components/${comp.id}`,
+              {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...comp, autoPriceFailed: true })
+              }
+            );
+          } catch (flagError) {
+            console.error('No se pudo marcar el componente con error de autocompletado de precio:', flagError);
+          }
+        }
       } finally {
         activeControllers.current.price = null;
         activeControllers.current.save = null;
@@ -389,16 +419,40 @@ const ComponentsPage = () => {
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...comp, price: data.price })
+            body: JSON.stringify({ ...comp, price: data.price, autoPriceFailed: false })
           }
         );
         result.push({ name: comp.name, category: comp.category, oldPrice, newPrice: data.price, status: 'success', error: null });
       } else {
         result.push({ name: comp.name, category: comp.category, oldPrice: comp.price, newPrice: null, status: 'error', error: 'No se pudo obtener el precio' });
+        try {
+          await fetch(
+            `${apiBase}/components/${comp.id}`,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...comp, autoPriceFailed: true })
+            }
+          );
+        } catch (flagError) {
+          console.error('No se pudo marcar el componente con error de autocompletado de precio:', flagError);
+        }
       }
     } catch (error) {
       console.error(`Error autocompletando precio para ${comp.name}:`, error);
       result.push({ name: comp.name, category: comp.category, oldPrice: comp.price, newPrice: null, status: 'error', error: String(error?.message || error) });
+      try {
+        await fetch(
+          `${apiBase}/components/${comp.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...comp, autoPriceFailed: true })
+          }
+        );
+      } catch (flagError) {
+        console.error('No se pudo marcar el componente con error de autocompletado de precio:', flagError);
+      }
     }
     await fetchComponents();
     setUpdatingClosing(true);
@@ -526,30 +580,42 @@ const ComponentsPage = () => {
               }
               onComponentSubmit={async (componentData) => {
                 if (modalMode === 'edit') {
+                  const priceChanged = Number(componentData.price) !== Number(selectedComponent?.price);
+                  const payload = {
+                    ...selectedComponent,
+                    ...componentData,
+                    id: selectedComponent.id,
+                    autoPriceFailed: priceChanged ? false : !!selectedComponent?.autoPriceFailed
+                  };
                   const res = await fetch(`${apiBase}/components/${selectedComponent.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(componentData)
+                    body: JSON.stringify(payload)
                   });
                   if (res.ok) {
                     const updated = await res.json().catch(() => null);
-                    setComponents(prev => prev.map(c => c.id === selectedComponent.id ? { ...c, ...(updated || componentData), id: selectedComponent.id } : c));
+                    const nextRecord = updated || payload;
+                    setComponents(prev => prev.map(c => c.id === selectedComponent.id ? { ...c, ...nextRecord, id: selectedComponent.id } : c));
                     scheduleComponentsRefresh();
                     setShowModal(false);
                   } else {
                     console.error('Error al actualizar el componente');
                   }
                 } else {
+                  const payload = {
+                    ...componentData,
+                    autoPriceFailed: false
+                  };
                   const res = await fetch(`${apiBase}/components`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(componentData)
+                    body: JSON.stringify(payload)
                   });
                   if (res.ok) {
                     const created = await res.json().catch(() => null);
                     setComponents(prev => {
                       const next = prev.filter(c => c.id !== (created?.id ?? null));
-                      const record = { ...(created || componentData) };
+                      const record = { ...(created || payload) };
                       return [...next, record];
                     });
                     scheduleComponentsRefresh();

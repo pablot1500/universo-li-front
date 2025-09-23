@@ -23,6 +23,18 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
   const [renameItems, setRenameItems] = useState([]);
   const [isRenaming, setIsRenaming] = useState(false);
 
+  const openCategoryRename = (category, items = []) => {
+    setIsRenaming(false);
+    setRenameCategory(category);
+    setRenameNewName(category);
+    setRenameItems(Array.isArray(items) ? items.slice() : []);
+    console.debug('ProductList openCategoryRename', category, Array.isArray(items) ? items.length : 'not-array');
+    const raf = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
+      ? window.requestAnimationFrame
+      : (fn) => setTimeout(fn, 0);
+    raf(() => setShowRename(true));
+  };
+
   // Calcula el total del producto a partir de sus materiales
   const computeTotals = (p = {}) => {
     const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
@@ -40,8 +52,33 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
       : (Number(p.price) || 0);
     const total = Math.round(base * 100) / 100;
     const costoConfeccion = Number(p.costoConfeccion) || 0;
-    const totalConConfeccion = Math.round((base + costoConfeccion) * 100) / 100;
-    return { hasAny, total, totalConConfeccion };
+    const totalConConfeccionBase = Math.round((base + costoConfeccion) * 100) / 100;
+
+    // Aplica el ajuste porcentual de "inflación" cuando esté definido en el producto
+    const adjustments = Array.isArray(p.priceAdjustments) ? p.priceAdjustments : [];
+    const inflationRow = adjustments.find(row => {
+      const name = typeof row?.name === 'string' ? row.name : '';
+      let normalized = name;
+      if (typeof normalized.normalize === 'function') {
+        normalized = normalized.normalize('NFD');
+      }
+      normalized = normalized
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+      return normalized === 'inflacion' || normalized === 'inflación';
+    });
+
+    let totalConConfeccion = totalConConfeccionBase;
+    if (inflationRow) {
+      const percent = Number(inflationRow.percent);
+      if (!Number.isNaN(percent)) {
+        const multiplier = 1 + percent / 100;
+        totalConConfeccion = Math.round(totalConConfeccionBase * multiplier * 100) / 100;
+      }
+    }
+
+    return { hasAny, total, totalConConfeccion, totalConConfeccionBase };
   };
 
   // Comprime/redimensiona imagen a DataURL (JPEG) con tamaño máximo y calidad
@@ -289,7 +326,16 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
             }, {})
           ).sort(([a],[b]) => a.localeCompare(b)).map(([category, prods]) => (
             <div key={category} style={{ marginBottom: 16 }}>
-              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h2 style={{ margin: 0 }}>{category}</h2>
+                <button
+                  type="button"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
+                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                >
+                  Renombrar categoría
+                </button>
+              </div>
               {prods
                 .slice()
                 .sort((a,b) => (a.name||'').localeCompare(b.name||''))
@@ -319,7 +365,16 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
             }, {})
           ).sort(([a],[b]) => a.localeCompare(b)).map(([category, prods]) => (
             <div key={category} style={{ marginBottom: 16 }}>
-              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h2 style={{ margin: 0 }}>{category}</h2>
+                <button
+                  type="button"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
+                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                >
+                  Renombrar categoría
+                </button>
+              </div>
               {prods
                 .slice()
                 .sort((a,b) => (a.name||'').localeCompare(b.name||''))
@@ -339,6 +394,60 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
               ))}
             </div>
           ))
+        )}
+        {showRename && (
+          <>
+            <div
+              style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', zIndex: 2000 }}
+              onClick={() => setShowRename(false)}
+            />
+            <div
+              style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: '#fff', padding: 20, borderRadius: 8, zIndex: 2001, width: '90%', maxWidth: 520 }}
+            >
+              <button
+                onClick={() => setShowRename(false)}
+                style={{ position: 'absolute', top: 10, right: 10, border: 'none', background: 'none', fontSize: 16, cursor: 'pointer' }}
+              >X</button>
+              <h3 style={{ marginTop: 0 }}>Renombrar categoría</h3>
+              <p style={{ marginTop: 0, color: '#555' }}>Actual: <strong>{renameCategory}</strong></p>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Nuevo nombre</label>
+                <input
+                  type="text"
+                  value={renameNewName}
+                  onChange={e => setRenameNewName(e.target.value)}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: 8 }}
+                  placeholder="Nuevo nombre de categoría"
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button onClick={() => setShowRename(false)} disabled={isRenaming}>Cancelar</button>
+                <button
+                  onClick={async () => {
+                    const newName = (renameNewName || '').trim();
+                    if (!newName) return;
+                    setIsRenaming(true);
+                    try {
+                      for (const prod of renameItems) {
+                        const payload = { ...prod, category: newName };
+                        await fetch(`/api/products/${prod.id}`, {
+                          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+                        });
+                      }
+                      await fetchProducts();
+                      setShowRename(false);
+                    } catch (e) {
+                      console.error('Error renombrando categoría de productos:', e);
+                      setIsRenaming(false);
+                    }
+                  }}
+                  disabled={isRenaming || !renameNewName.trim()}
+                >
+                  {isRenaming ? 'Renombrando…' : 'Renombrar'}
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     );
@@ -441,20 +550,16 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
             .map(([category, prods]) => (
               <div key={category} style={{ marginBottom: '32px' }}>
                 <hr />
-                <h2 style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {category}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '16px 0', padding: '6px 10px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>
+                  <h2 style={{ margin: 0 }}>{category}</h2>
                   <button
-                    style={{ marginLeft: 8 }}
-                    onClick={() => {
-                      setRenameCategory(category);
-                      setRenameNewName(category);
-                      setRenameItems(prods.slice());
-                      setShowRename(true);
-                    }}
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
                   >
                     Renombrar categoría
                   </button>
-                </h2>
+                </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
                   {prods.map(product => (
                     <div

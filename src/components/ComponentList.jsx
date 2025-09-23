@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 
 const ComponentList = ({
   components,
@@ -13,27 +14,6 @@ const ComponentList = ({
   onBulkCategoryUpdate
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  // Divisor drafts por componente (input editable)
-  const [divisorDrafts, setDivisorDrafts] = useState({});
-  const getDivisorDraft = (component) => {
-    const current = divisorDrafts[component.id];
-    if (current != null && current !== '') return current;
-    const d = Number(component?.unitDivisor);
-    return Number.isFinite(d) && d > 0 ? d : 1;
-  };
-  const setDivisorDraftFor = (id, val) => setDivisorDrafts(prev => ({ ...prev, [id]: val }));
-  const saveDivisor = async (component, valueOverride) => {
-    try {
-      const raw = valueOverride != null ? valueOverride : getDivisorDraft(component);
-      const n = Number(raw);
-      const divisor = Number.isFinite(n) && n > 0 ? Math.round(n) : 1;
-      await fetch(`/api/components/${component.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...component, unitDivisor: divisor })
-      });
-      if (typeof refreshComponents === 'function') refreshComponents();
-    } catch (e) { console.error('No se pudo guardar el divisor', e); }
-  };
-
   const cap = (s) => (typeof s === 'string' && s.length) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   const getAvailableInfo = (component) => {
     const isTela = (component?.category || '').toLowerCase() === 'telas';
@@ -43,6 +23,18 @@ const ComponentList = ({
       label: isTela ? 'Disponible (metros)' : 'Disponible',
       value: formatted
     };
+  };
+
+  const renderWarningIcon = (component) => {
+    if (!component?.autoPriceFailed) return null;
+    return (
+      <span
+        style={{ color: '#f4b400', fontSize: '18px', display: 'inline-flex', alignItems: 'center' }}
+        title="Falló la actualización automática del precio"
+      >
+        ⚠️
+      </span>
+    );
   };
 
   // Estado para comentarios por categoría
@@ -62,15 +54,24 @@ const ComponentList = ({
   const [renameItems, setRenameItems] = useState([]); // componentes en la categoría
   const [isRenaming, setIsRenaming] = useState(false);
 
-  const openRename = (category, compsInCategory) => {
+  const openRename = (category, compsInCategory = []) => {
+    setRenameClosing(false);
+    setIsRenaming(false);
     setRenameCategory(category);
     setRenameNewName(category);
-    setRenameItems((compsInCategory || []).slice());
+    setRenameItems(Array.isArray(compsInCategory) ? compsInCategory.slice() : []);
+    console.debug('ComponentList openRename', category, Array.isArray(compsInCategory) ? compsInCategory.length : 'not-array');
     setShowRename(true);
   };
+
+  React.useEffect(() => {
+    if (!showRename) return;
+    console.debug('ComponentList showRename -> true', renameCategory, renameItems.length);
+  }, [showRename, renameCategory, renameItems.length]);
   const closeRename = () => {
     setRenameClosing(true);
     setTimeout(() => {
+      console.debug('ComponentList closeRename timeout - hiding modal');
       setShowRename(false);
       setRenameCategory('');
       setRenameNewName('');
@@ -103,17 +104,53 @@ const ComponentList = ({
 
   const overlayStyle = useMemo(() => ({
     position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-    backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 2000
+    backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 5000
   }), []);
   const modalStyle = useMemo(() => ({
     position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-    background: '#fff', padding: 20, borderRadius: 8, zIndex: 2001,
+    background: '#fff', padding: 20, borderRadius: 8, zIndex: 5001,
     width: '90%', maxWidth: 800, maxHeight: '80vh', overflowY: 'auto'
   }), []);
   const overlayFade = (closing) => ({ ...overlayStyle, opacity: closing ? 0 : 1, transition: 'opacity 180ms ease' });
   const modalAnim = (closing) => ({ ...modalStyle, opacity: closing ? 0 : 1, transform: `translate(-50%, -50%) ${closing ? 'scale(0.98)' : 'scale(1)'}`, transition: 'opacity 180ms ease, transform 180ms ease' });
   const [commentsClosing, setCommentsClosing] = useState(false);
   const [renameClosing, setRenameClosing] = useState(false);
+
+  const renderRenameModal = () => {
+    if (!showRename) return null;
+    console.debug('ComponentList render rename modal', renameCategory);
+    const modalContent = (
+      <>
+        <div style={overlayFade(renameClosing)} onClick={closeRename} />
+        <div style={modalAnim(renameClosing)}>
+          <button
+            onClick={closeRename}
+            style={{ position: 'absolute', top: 10, right: 10, border: 'none', background: 'none', fontSize: 16, cursor: 'pointer' }}
+          >X</button>
+          <h3 style={{ marginTop: 0 }}>Renombrar categoría</h3>
+          <p style={{ marginTop: 0, color: '#555' }}>Actual: <strong>{renameCategory}</strong></p>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Nuevo nombre</label>
+            <input
+              type="text"
+              value={renameNewName}
+              onChange={e => setRenameNewName(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', padding: 8 }}
+              placeholder="Nuevo nombre de categoría"
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button onClick={closeRename} disabled={isRenaming}>Cancelar</button>
+            <button onClick={doRename} disabled={isRenaming || !renameNewName.trim()}>{isRenaming ? 'Renombrando…' : 'Renombrar'}</button>
+          </div>
+        </div>
+      </>
+    );
+    if (typeof document !== 'undefined' && document.body) {
+      return createPortal(modalContent, document.body);
+    }
+    return modalContent;
+  };
 
   // Marcar/Desmarcar como destacado
   const toggleFeatured = async (component) => {
@@ -260,7 +297,10 @@ const ComponentList = ({
       : '0.00';
     return (
       <div className="card" style={{ marginBottom: '16px' }}>
-        <h3>{cap(component.name)}</h3>
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {renderWarningIcon(component)}
+          {cap(component.name)}
+        </h3>
         <p>
           {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
           <br/>
@@ -283,20 +323,6 @@ const ComponentList = ({
         <button className="card-button" style={{ marginRight: '8px' }} onClick={() => toggleFeatured(component)}>
           {component?.featured ? 'Dejar de destacar' : 'Destacar'}
         </button>
-        <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={getDivisorDraft(component)}
-            onChange={e => setDivisorDraftFor(component.id, e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
-            style={{ width: 80 }}
-          />
-          <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
-          <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
-        </div>
         <button className="card-button" style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }} onClick={() => onAutocompletePrice(component)} disabled={!component.link} title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}>
           Autocompletar Precio
         </button>
@@ -325,7 +351,10 @@ const ComponentList = ({
               {featured.map(component => (
                 <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
-                    <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                    <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {renderWarningIcon(component)}
+                      {cap(component.name)}
+                    </div>
                     <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
                   </div>
                   <div style={collapseStyle(isExpanded(component.id))}>
@@ -348,14 +377,32 @@ const ComponentList = ({
           .sort(([a],[b]) => a.localeCompare(b))
           .map(([category, comps]) => (
             <div key={category} style={{ marginBottom: 16 }}>
-              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h2 style={{ margin: 0 }}>{category}</h2>
+                <button
+                  type="button"
+                  onClick={() => openRename(category, comps)}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: '1px solid #f8cfe1',
+                    background: '#fce1ef',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Renombrar categoría
+                </button>
+              </div>
               {comps
                 .slice()
                 .sort((a,b) => (a.name||'').localeCompare(b.name||''))
                 .map(component => (
                   <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
-                      <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                      <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {renderWarningIcon(component)}
+                        {cap(component.name)}
+                      </div>
                       <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
                     </div>
                     <div style={collapseStyle(isExpanded(component.id))}>
@@ -377,14 +424,26 @@ const ComponentList = ({
           .sort(([a],[b]) => a.localeCompare(b))
           .map(([category, comps]) => (
             <div key={category} style={{ marginBottom: 16 }}>
-              <h2 style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>{category}</h2>
+              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h2 style={{ margin: 0 }}>{category}</h2>
+                <button
+                  type="button"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
+                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                >
+                  Renombrar categoría
+                </button>
+              </div>
               {comps
                 .slice()
                 .sort((a,b) => (a.name||'').localeCompare(b.name||''))
                 .map(component => (
                 <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
-                    <div style={{ fontWeight: 600 }}>{cap(component.name)}</div>
+                    <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {renderWarningIcon(component)}
+                      {cap(component.name)}
+                    </div>
                     <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
                   </div>
                   <div style={collapseStyle(isExpanded(component.id))}>
@@ -395,6 +454,7 @@ const ComponentList = ({
             </div>
           ))
         )}
+        {renderRenameModal()}
       </div>
     );
   }
@@ -428,7 +488,10 @@ const ComponentList = ({
               const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
               return (
                 <div key={component.id} className="card" style={{ marginBottom: '16px' }}>
-                  <h3>{cap(component.name)}</h3>
+                  <h3 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {renderWarningIcon(component)}
+                    {cap(component.name)}
+                  </h3>
                   <p>
                     {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
                     <br/>
@@ -453,43 +516,29 @@ const ComponentList = ({
                   >
                     Editar
                   </button>
-                  <button
-                    className="card-button"
-                    style={{ marginRight: '8px' }}
-                    onClick={() => onCopyComponent(component)}
-                  >
-                    Copiar
-                  </button>
-                  <button
-                    className="card-button"
-                    style={{ marginRight: '8px' }}
-                    onClick={() => toggleFeatured(component)}
-                  >
-                    {component?.featured ? 'Dejar de destacar' : 'Destacar'}
-                  </button>
-                  <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={getDivisorDraft(component)}
-                      onChange={e => setDivisorDraftFor(component.id, e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
-                      style={{ width: 80 }}
-                    />
-                    <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
-                    <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
-                  </div>
-                  <button
-                    className="card-button"
-                    style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
-                    onClick={() => onAutocompletePrice(component)}
-                    disabled={!component.link}
-                    title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
-                  >
-                    Autocompletar Precio
-                  </button>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px' }}
+                            onClick={() => onCopyComponent(component)}
+                          >
+                            Copiar
+                          </button>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px' }}
+                            onClick={() => toggleFeatured(component)}
+                          >
+                            {component?.featured ? 'Dejar de destacar' : 'Destacar'}
+                          </button>
+                          <button
+                            className="card-button"
+                            style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
+                            onClick={() => onAutocompletePrice(component)}
+                            disabled={!component.link}
+                            title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
+                          >
+                            Autocompletar Precio
+                          </button>
                   <button
                     className="card-button"
                     onClick={() => onDeleteComponent(component)}
@@ -513,10 +562,18 @@ const ComponentList = ({
                   <hr />
                   {isMobile ? (
                     <>
-                      <h2 style={{ margin: '16px 0' }}>{category}</h2>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '16px 0', padding: '6px 10px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>
+                        <h2 style={{ margin: 0 }}>{category}</h2>
+                        <button
+                          type="button"
+                          onClick={() => openRename(category, comps)}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                        >
+                          Renombrar categoría
+                        </button>
+                      </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                         <button onClick={() => openComments(category, comps)}>Ver comentarios</button>
-                        <button onClick={() => openRename(category, comps)}>Renombrar categoría</button>
                         <button
                           onClick={() => onBulkCategoryUpdate && onBulkCategoryUpdate(category)}
                           title="Actualizar precios de esta categoría"
@@ -526,18 +583,25 @@ const ComponentList = ({
                       </div>
                     </>
                   ) : (
-                    <h2 style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {category}
-                      <button style={{ marginLeft: 8 }} onClick={() => openComments(category, comps)}>Ver comentarios</button>
-                      <button style={{ marginLeft: 8 }} onClick={() => openRename(category, comps)}>Renombrar categoría</button>
-                      <button
-                        style={{ marginLeft: 8 }}
-                        onClick={() => onBulkCategoryUpdate && onBulkCategoryUpdate(category)}
-                        title="Actualizar precios de esta categoría"
-                      >
-                        Actualizar precios
-                      </button>
-                    </h2>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '16px 0', padding: '6px 10px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>
+                      <h2 style={{ margin: 0 }}>{category}</h2>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => openRename(category, comps)}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                        >
+                          Renombrar categoría
+                        </button>
+                        <button onClick={() => openComments(category, comps)}>Ver comentarios</button>
+                        <button
+                          onClick={() => onBulkCategoryUpdate && onBulkCategoryUpdate(category)}
+                          title="Actualizar precios de esta categoría"
+                        >
+                          Actualizar precios
+                        </button>
+                      </div>
+                    </div>
                   )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
                     {comps.map(component => {
@@ -553,7 +617,10 @@ const ComponentList = ({
                         : '0.00';
                       return (
                         <div key={component.id} className="card" style={{ width: '48%', marginBottom: '16px' }}>
-                          <h3>{cap(component.name)}</h3>
+                          <h3 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {renderWarningIcon(component)}
+                            {cap(component.name)}
+                          </h3>
                           <p>
                             {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
                             <br/>
@@ -585,20 +652,6 @@ const ComponentList = ({
                           >
                             Copiar
                           </button>
-                          <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginRight: 8, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: 12, color: '#555' }}>Dividir por:</span>
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
-                              value={getDivisorDraft(component)}
-                              onChange={e => setDivisorDraftFor(component.id, e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') saveDivisor(component); }}
-                              style={{ width: 80 }}
-                            />
-                            <button className="card-button" onClick={() => saveDivisor(component)}>Guardar</button>
-                            <button className="card-button" onClick={() => { setDivisorDraftFor(component.id, 1); saveDivisor(component, 1); }}>Quitar</button>
-                          </div>
                           <button
                             className="card-button"
                             style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
@@ -708,34 +761,7 @@ const ComponentList = ({
         </>
       )}
 
-      {/* Popup renombrar categoría (componentes) */}
-      {showRename && (
-        <>
-          <div style={overlayFade(renameClosing)} onClick={closeRename} />
-          <div style={modalAnim(renameClosing)}>
-            <button
-              onClick={closeRename}
-              style={{ position: 'absolute', top: 10, right: 10, border: 'none', background: 'none', fontSize: 16, cursor: 'pointer' }}
-            >X</button>
-            <h3 style={{ marginTop: 0 }}>Renombrar categoría</h3>
-            <p style={{ marginTop: 0, color: '#555' }}>Actual: <strong>{renameCategory}</strong></p>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Nuevo nombre</label>
-              <input
-                type="text"
-                value={renameNewName}
-                onChange={e => setRenameNewName(e.target.value)}
-                style={{ width: '100%', boxSizing: 'border-box', padding: 8 }}
-                placeholder="Nuevo nombre de categoría"
-              />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={closeRename} disabled={isRenaming}>Cancelar</button>
-              <button onClick={doRename} disabled={isRenaming || !renameNewName.trim()}>{isRenaming ? 'Renombrando…' : 'Renombrar'}</button>
-            </div>
-          </div>
-        </>
-      )}
+      {renderRenameModal()}
     </div>
   );
 };

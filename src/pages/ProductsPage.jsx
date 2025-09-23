@@ -208,6 +208,7 @@ const ProductsPage = () => {
   const latestDetailRef = useRef(null);
   const autosaveTimerRef = useRef(null);
   const pendingSaveRef = useRef(false);
+  const detailUpdatedRef = useRef(false);
 
   const selectorOptions = useMemo(() => {
     if (!selectorOpen) return [];
@@ -571,6 +572,7 @@ const ProductsPage = () => {
     detailHistoryRef.current = [];
     setCanUndo(false);
     isUndoingRef.current = false;
+    detailUpdatedRef.current = false;
     // Intentar traer la versión más reciente del producto desde la API
     let freshProduct = product;
     try {
@@ -761,6 +763,7 @@ const ProductsPage = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      detailUpdatedRef.current = true;
       setDetailProduct(prev => {
         if (!prev) return prev;
         if (prev.id !== current.id) return prev;
@@ -855,6 +858,16 @@ const ProductsPage = () => {
       persistDetail();
     }
   }, [showDetailModal, persistDetail]);
+
+  useEffect(() => {
+    if (showDetailModal) return;
+    if (pendingSaveRef.current) return;
+    if (!detailUpdatedRef.current) return;
+    if (isSaving) return;
+    // El detalle guardó cambios que ya fueron persistidos, refrescamos la lista para reflejar nuevos precios
+    detailUpdatedRef.current = false;
+    setRefresh(prev => prev + 1);
+  }, [showDetailModal, isSaving]);
 
   const reorderItems = (list = [], fromIdx, toIdx) => {
     if (fromIdx == null || toIdx == null || fromIdx === toIdx) return list;
@@ -1280,7 +1293,9 @@ const ProductsPage = () => {
                         }
                       }}
                     >
-                      {(detailProduct.componentes?.telas || []).map((tela, idx) => (
+                      {(detailProduct.componentes?.telas || []).map((tela, idx) => {
+                        const telaRecord = tela.componentId ? telaById[tela.componentId] : null;
+                        return (
                             <tr
                               key={idx}
                               draggable
@@ -1307,7 +1322,17 @@ const ProductsPage = () => {
                                 <button onClick={() => openSelector('tela', idx)}>Seleccione Tela</button>
                                 {tela.componentId ? (
                                   <div style={{ marginTop: 6, color: '#555', fontSize: 12 }}>
-                                    {cap(telaById[tela.componentId]?.name || '') || tela.componentId}
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      {telaRecord?.autoPriceFailed ? (
+                                        <span
+                                          style={{ color: '#f4b400', fontSize: 14, display: 'inline-flex', alignItems: 'center' }}
+                                          title="Falló la actualización automática del precio"
+                                        >
+                                          ⚠️
+                                        </span>
+                                      ) : null}
+                                      {cap(telaRecord?.name || '') || tela.componentId}
+                                    </span>
                                   </div>
                                 ) : null}
                               </td>
@@ -1380,7 +1405,8 @@ const ProductsPage = () => {
                                 <button onClick={() => handleRemoveTela(idx)}>- Eliminar</button>
                               </td>
                             </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                     </table>
                   </div>
@@ -1446,9 +1472,10 @@ const ProductsPage = () => {
                             }
                           }}
                         >
-                          {(detailProduct.componentes?.otros || []).map((otro, idx) => {
-                            const total = (Number(otro.unidades) || 0) * (Number(otro.precioUnitario) || 0);
-                            return (
+                        {(detailProduct.componentes?.otros || []).map((otro, idx) => {
+                          const total = (Number(otro.unidades) || 0) * (Number(otro.precioUnitario) || 0);
+                          const otherRecord = otro.componentId ? otherById[otro.componentId] : null;
+                          return (
                               <tr
                                 key={`otro-${idx}`}
                                 draggable
@@ -1473,7 +1500,17 @@ const ProductsPage = () => {
                                   <button onClick={() => openSelector('otro', idx)}>Seleccione Componente</button>
                                   {otro.componentId ? (
                                     <div style={{ marginTop: 6, color: '#555', fontSize: 12 }}>
-                                      {cap(otherById[otro.componentId]?.name || '') || otro.componentId}
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                        {otherRecord?.autoPriceFailed ? (
+                                          <span
+                                            style={{ color: '#f4b400', fontSize: 14, display: 'inline-flex', alignItems: 'center' }}
+                                            title="Falló la actualización automática del precio"
+                                          >
+                                            ⚠️
+                                          </span>
+                                        ) : null}
+                                        {cap(otherRecord?.name || '') || otro.componentId}
+                                      </span>
                                     </div>
                                   ) : null}
                                 </td>
@@ -1561,6 +1598,7 @@ const ProductsPage = () => {
                       >
                         {(detailProduct.componentes?.otros || []).map((otro, idx) => {
                           const total = (Number(otro.unidades) || 0) * (Number(otro.precioUnitario) || 0);
+                          const otherRecord = otro.componentId ? otherById[otro.componentId] : null;
                           return (
                               <tr
                                 key={`otro-${idx}`}
@@ -1586,7 +1624,17 @@ const ProductsPage = () => {
                                   <button onClick={() => openSelector('otro', idx)}>Seleccione Componente</button>
                                   {otro.componentId ? (
                                     <div style={{ marginTop: 6, color: '#555', fontSize: 12 }}>
-                                      {cap(otherById[otro.componentId]?.name || '') || otro.componentId}
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                        {otherRecord?.autoPriceFailed ? (
+                                          <span
+                                            style={{ color: '#f4b400', fontSize: 14, display: 'inline-flex', alignItems: 'center' }}
+                                            title="Falló la actualización automática del precio"
+                                          >
+                                            ⚠️
+                                          </span>
+                                        ) : null}
+                                        {cap(otherRecord?.name || '') || otro.componentId}
+                                      </span>
                                     </div>
                                   ) : null}
                                 </td>
