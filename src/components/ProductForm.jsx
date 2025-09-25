@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 
+const LOCKED_COMPOSITE_CATEGORY = 'Set / Conjuntos';
+
 const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
   const [formData, setFormData] = useState({
     name: '',
     category: '',
     available: '',
+    type: 'simple',
     ...initialValues
   });
   const [categories, setCategories] = useState([]);
@@ -12,12 +15,18 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   useEffect(() => {
-    setFormData({
+    const nextType = initialValues?.type || 'simple';
+    const base = {
       name: '',
       category: '',
       available: '',
+      type: nextType,
       ...initialValues
-    });
+    };
+    if (nextType === 'composite') {
+      base.category = LOCKED_COMPOSITE_CATEGORY;
+    }
+    setFormData(base);
   }, [initialValues]);
 
   useEffect(() => {
@@ -36,9 +45,22 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
     fetchCategories();
   }, []);
 
+  const effectiveType = formData?.type || 'simple';
+  const isComposite = effectiveType === 'composite';
+
+  useEffect(() => {
+    if (isComposite) {
+      setShowSuggestions(false);
+    }
+  }, [isComposite]);
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     if (name === 'category') {
+      if (isComposite) {
+        setShowSuggestions(false);
+        return;
+      }
       const filtered = categories.filter(cat =>
         cat.toLowerCase().includes(value.toLowerCase())
       );
@@ -57,6 +79,7 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
       name: formData.name,
       category: formData.category,
       available: parseInt(formData.available, 10),
+      type: effectiveType,
     });
   };
 
@@ -65,6 +88,14 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
       <h2>
         {mode === 'edit' ? 'Editar Producto' : mode === 'copy' ? 'Copiar Producto' : 'Agregar Producto'}
       </h2>
+      <div style={{ marginBottom: '16px' }}>
+        <label>Tipo de producto:</label>
+        <input
+          value={isComposite ? 'Producto compuesto (set)' : 'Producto simple'}
+          readOnly
+          style={{ backgroundColor: '#f5f5f5' }}
+        />
+      </div>
       <div style={{ marginBottom: '16px' }}>
         <label>Nombre:</label>
         <input name="name" value={formData.name} onChange={handleChange} required />
@@ -76,13 +107,15 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
           value={formData.category}
           onChange={handleChange}
           required
+          disabled={isComposite}
           onFocus={() => {
+            if (isComposite) return;
             setFilteredCategories(categories);
             setShowSuggestions(true);
           }}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 100)}
         />
-        {showSuggestions && filteredCategories.length > 0 && (
+        {!isComposite && showSuggestions && filteredCategories.length > 0 && (
           <ul style={{
             border: '1px solid #ccc',
             maxHeight: '100px',

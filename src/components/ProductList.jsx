@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
+const COMPOSITE_CATEGORY = 'Set / Conjuntos';
+
 const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopyProduct, onDeleteProduct }) => {
   const [products, setProducts] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -36,7 +38,48 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
   };
 
   // Calcula el total del producto a partir de sus materiales
-  const computeTotals = (p = {}) => {
+  const computeTotals = (p = {}, memo) => {
+    const cache = memo || new Map();
+    const productId = p?.id;
+    if (productId && cache.has(productId)) {
+      return cache.get(productId);
+    }
+    if (productId && !cache.has(productId)) {
+      cache.set(productId, { hasAny: false, total: 0, totalConConfeccion: 0, totalConConfeccionBase: 0 });
+    }
+
+    const productType = (p?.type || 'simple').toLowerCase();
+    if (productType === 'composite') {
+      const items = Array.isArray(p?.compositeItems) ? p.compositeItems : [];
+      let subtotal = 0;
+      let totalWithConfeccion = 0;
+      let hasReferencedTotals = false;
+
+      items.forEach(item => {
+        if (!item?.productId) return;
+        if (item.productId === productId) return;
+        const referenced = products.find(prod => prod.id === item.productId);
+        if (!referenced) return;
+        const childTotals = computeTotals(referenced, cache);
+        const childBase = Number(childTotals?.totalConConfeccionBase ?? childTotals?.total ?? 0);
+        const childWithConfeccion = Number(childTotals?.totalConConfeccion ?? 0);
+        subtotal += childBase;
+        totalWithConfeccion += childWithConfeccion;
+        if (childWithConfeccion > 0 || childTotals?.hasAny) {
+          hasReferencedTotals = true;
+        }
+      });
+
+      const compositeResult = {
+        hasAny: hasReferencedTotals || items.length > 0,
+        total: Math.round(subtotal * 100) / 100,
+        totalConConfeccionBase: Math.round(subtotal * 100) / 100,
+        totalConConfeccion: Math.round(totalWithConfeccion * 100) / 100
+      };
+      if (productId) cache.set(productId, compositeResult);
+      return compositeResult;
+    }
+
     const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
     const otros = (p.componentes && Array.isArray(p.componentes.otros)) ? p.componentes.otros : [];
     const hasTela = telas.some(t => t && t.componentId);
@@ -78,7 +121,9 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
       }
     }
 
-    return { hasAny, total, totalConConfeccion, totalConConfeccionBase };
+    const result = { hasAny, total, totalConConfeccion, totalConConfeccionBase };
+    if (productId) cache.set(productId, result);
+    return result;
   };
 
   // Comprime/redimensiona imagen a DataURL (JPEG) con tamaño máximo y calidad
@@ -330,8 +375,22 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
                 <h2 style={{ margin: 0 }}>{category}</h2>
                 <button
                   type="button"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
-                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                  disabled={category === COMPOSITE_CATEGORY}
+                  onClick={(e) => {
+                    if (category === COMPOSITE_CATEGORY) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCategoryRename(category, prods);
+                  }}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: '1px solid #f8cfe1',
+                    background: category === COMPOSITE_CATEGORY ? '#f5f5f5' : '#fce1ef',
+                    cursor: category === COMPOSITE_CATEGORY ? 'not-allowed' : 'pointer',
+                    opacity: category === COMPOSITE_CATEGORY ? 0.6 : 1
+                  }}
+                  title={category === COMPOSITE_CATEGORY ? 'La categoría Set / Conjuntos es fija' : 'Renombrar categoría'}
                 >
                   Renombrar categoría
                 </button>
@@ -369,8 +428,22 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
                 <h2 style={{ margin: 0 }}>{category}</h2>
                 <button
                   type="button"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
-                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                  disabled={category === COMPOSITE_CATEGORY}
+                  onClick={(e) => {
+                    if (category === COMPOSITE_CATEGORY) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCategoryRename(category, prods);
+                  }}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: '1px solid #f8cfe1',
+                    background: category === COMPOSITE_CATEGORY ? '#f5f5f5' : '#fce1ef',
+                    cursor: category === COMPOSITE_CATEGORY ? 'not-allowed' : 'pointer',
+                    opacity: category === COMPOSITE_CATEGORY ? 0.6 : 1
+                  }}
+                  title={category === COMPOSITE_CATEGORY ? 'La categoría Set / Conjuntos es fija' : 'Renombrar categoría'}
                 >
                   Renombrar categoría
                 </button>
@@ -554,8 +627,22 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
                   <h2 style={{ margin: 0 }}>{category}</h2>
                   <button
                     type="button"
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openCategoryRename(category, prods); }}
-                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                    disabled={category === COMPOSITE_CATEGORY}
+                    onClick={(e) => {
+                      if (category === COMPOSITE_CATEGORY) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openCategoryRename(category, prods);
+                    }}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: '1px solid #f8cfe1',
+                      background: category === COMPOSITE_CATEGORY ? '#f5f5f5' : '#fce1ef',
+                      cursor: category === COMPOSITE_CATEGORY ? 'not-allowed' : 'pointer',
+                      opacity: category === COMPOSITE_CATEGORY ? 0.6 : 1
+                    }}
+                    title={category === COMPOSITE_CATEGORY ? 'La categoría Set / Conjuntos es fija' : 'Renombrar categoría'}
                   >
                     Renombrar categoría
                   </button>

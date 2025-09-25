@@ -139,9 +139,13 @@ const isConfeccionName = (name) => norm(name).includes('confeccion');
 
 const cloneDetailProduct = (product) => (product ? JSON.parse(JSON.stringify(product)) : null);
 
+const COMPOSITE_CATEGORY = 'Set / Conjuntos';
+
 const ProductsPage = () => {
   const [refresh, setRefresh] = useState(0);
   const [showModal, setShowModal] = useState(false);
+  const [showTypeModal, setShowTypeModal] = useState(false);
+  const [pendingProductType, setPendingProductType] = useState(null);
   const [modalMode, setModalMode] = useState('add');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -159,6 +163,20 @@ const ProductsPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [confirmUnsavedOpen, setConfirmUnsavedOpen] = useState(false);
+  const [showUpdatingPopup, setShowUpdatingPopup] = useState(false);
+  const [updatingClosing, setUpdatingClosing] = useState(false);
+  const [progressItems, setProgressItems] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(-1);
+  const [showResultsPopup, setShowResultsPopup] = useState(false);
+  const [resultsClosing, setResultsClosing] = useState(false);
+  const [results, setResults] = useState([]);
+  const cancelUpdateRef = useRef(false);
+  const activeControllersRef = useRef({ price: null, save: null });
+  const [updatingProductName, setUpdatingProductName] = useState('');
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const apiBase = origin ? `${origin}/api` : '/api';
+  const scraperEndpoint = `${apiBase}/precio-casanacho`;
 
   const statusMessage = saveError
     ? 'No se pudo guardar automáticamente. Intentá de nuevo.'
@@ -185,6 +203,7 @@ const ProductsPage = () => {
   // Listas de componentes disponibles para dropdowns
   const [telaComponents, setTelaComponents] = useState([]);
   const [otherComponents, setOtherComponents] = useState([]);
+  const [productCatalog, setProductCatalog] = useState([]);
 
   // Helpers
   const cap = (s) => (typeof s === 'string' && s.length) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
@@ -192,10 +211,37 @@ const ProductsPage = () => {
   // Maps por id para acceso rápido a nombres
   const telaById = useMemo(() => Object.fromEntries((telaComponents || []).map(c => [c.id, c])), [telaComponents]);
   const otherById = useMemo(() => Object.fromEntries((otherComponents || []).map(c => [c.id, c])), [otherComponents]);
+  const productById = useMemo(() => Object.fromEntries((productCatalog || []).map(p => [p.id, p])), [productCatalog]);
+
+  const computeReferencedProductTotals = useCallback((refProduct) => {
+    if (!refProduct) {
+      return { subtotal: 0, totalConConfeccion: 0 };
+    }
+    const telasSubtotal = (refProduct.componentes?.telas || [])
+      .reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
+    const otrosRowsRef = (refProduct.componentes?.otros || []).map(o => {
+      const unidades = Number(o?.unidades) || 0;
+      const precioUnitario = Number(o?.precioUnitario) || 0;
+      const total = unidades * precioUnitario;
+      const explicitTag = o?.tagConfeccion;
+      const componentName = otherById[o?.componentId]?.name;
+      const inferredTag = explicitTag != null ? Boolean(explicitTag) : isConfeccionName(componentName);
+      return { total, isConf: inferredTag };
+    });
+    const otrosNoConf = otrosRowsRef.filter(r => !r.isConf).reduce((acc, row) => acc + row.total, 0);
+    const otrosConf = otrosRowsRef.filter(r => r.isConf).reduce((acc, row) => acc + row.total, 0);
+    const hasConf = otrosRowsRef.some(r => r.isConf);
+    const subtotal = round2(telasSubtotal + otrosNoConf);
+    const confeccionValue = hasConf
+      ? round2(otrosConf)
+      : round2(Number(refProduct?.costoConfeccion) || 0);
+    const totalConConfeccion = round2(subtotal + confeccionValue);
+    return { subtotal, totalConConfeccion };
+  }, [otherById]);
 
   // Selector de componentes (popup)
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [selectorMode, setSelectorMode] = useState(null); // 'tela' | 'otro'
+  const [selectorMode, setSelectorMode] = useState(null); // 'tela' | 'otro' | 'product'
   const [selectorIndex, setSelectorIndex] = useState(null);
   const [selectorSearch, setSelectorSearch] = useState('');
   const [draggingTelaIndex, setDraggingTelaIndex] = useState(null);
@@ -212,13 +258,53 @@ const ProductsPage = () => {
 
   const selectorOptions = useMemo(() => {
     if (!selectorOpen) return [];
-    const pool = selectorMode === 'tela' ? telaComponents : otherComponents;
+    let pool = [];
+    if (selectorMode === 'tela') {
+      pool = telaComponents || [];
+    } else if (selectorMode === 'otro') {
+      pool = otherComponents || [];
+    } else if (selectorMode === 'product') {
+      const currentId = detailProduct?.id;
+      pool = (productCatalog || []).filter(p => {
+        const type = p?.type || 'simple';
+        if (type === 'composite') return false;
+        if (currentId && p?.id === currentId) return false;
+        return true;
+      });
+    }
+    const term = selectorSearch.toLowerCase();
     return (pool || [])
       .slice()
       .sort((a, b) => (a?.name || '').localeCompare(b?.name || ''))
-      .filter(c => (c?.name || '').toLowerCase().includes(selectorSearch.toLowerCase()));
-  }, [selectorOpen, selectorMode, telaComponents, otherComponents, selectorSearch]);
+      .filter(item => (item?.name || '').toLowerCase().includes(term));
+  }, [selectorOpen, selectorMode, telaComponents, otherComponents, productCatalog, selectorSearch, detailProduct]);
   selectorOptionRefs.current = selectorOptionRefs.current.slice(0, selectorOptions.length);
+
+  const detailUpdateCandidates = useMemo(() => {
+    if (!detailProduct) return [];
+    const seen = new Set();
+    const candidates = [];
+    const register = (component, type) => {
+      if (!component || !component.id) return;
+      const link = typeof component.link === 'string' ? component.link.toLowerCase() : '';
+      if (!link.includes('casanacho')) return;
+      if (seen.has(component.id)) return;
+      seen.add(component.id);
+      candidates.push({ component, type });
+    };
+    (detailProduct.componentes?.telas || []).forEach(row => {
+      if (!row?.componentId) return;
+      register(telaById[row.componentId], 'tela');
+    });
+    (detailProduct.componentes?.otros || []).forEach(row => {
+      if (!row?.componentId) return;
+      register(otherById[row.componentId], 'otro');
+    });
+    return candidates;
+  }, [detailProduct, telaById, otherById]);
+
+  const canBulkUpdateComponents = detailUpdateCandidates.length > 0;
+  const updateButtonDisabled = !canBulkUpdateComponents || showUpdatingPopup || showResultsPopup;
 
   // Responsive: detectar mobile (iPhone vertical) para rediseñar la vista de detalle
   const [isMobile, setIsMobile] = useState(false);
@@ -240,35 +326,43 @@ const ProductsPage = () => {
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  const fetchComponentCatalog = useCallback(async () => {
+    try {
+      const res = await fetch('/api/components');
+      if (!res.ok) return null;
+      const data = await res.json();
+      const telas = (data || []).filter(c => (c.category || '').toLowerCase() === 'telas');
+      const otros = (data || []).filter(c => (c.category || '').toLowerCase() !== 'telas');
+      setTelaComponents(telas);
+      setOtherComponents(otros);
+      return { telas, otros };
+    } catch (err) {
+      console.error('Error fetching components catalog:', err);
+      return null;
+    }
+  }, []);
+
+  const fetchProductsCatalog = useCallback(async () => {
+    try {
+      const res = await fetch('/api/products');
+      if (!res.ok) return [];
+      const data = await res.json();
+      setProductCatalog(Array.isArray(data) ? data : []);
+      return Array.isArray(data) ? data : [];
+    } catch (err) {
+      console.error('Error fetching products catalog:', err);
+      return [];
+    }
+  }, []);
+
   // Fetch de componentes (Telas y Otros)
   useEffect(() => {
-    const fetchTelas = async () => {
-      try {
-        // Trae todos y filtra case-insensitive por categoría 'telas'
-        const res = await fetch('/api/components');
-        if (res.ok) {
-          const data = await res.json();
-          const telas = (data || []).filter(c => (c.category || '').toLowerCase() === 'telas');
-          setTelaComponents(telas);
-        }
-      } catch (err) {
-        console.error('Error fetching tela components:', err);
-      }
-    };
-    const fetchOtros = async () => {
-      try {
-        const res = await fetch('/api/components');
-        if (res.ok) {
-          const data = await res.json();
-          setOtherComponents((data || []).filter(c => (c.category || '').toLowerCase() !== 'telas'));
-        }
-      } catch (err) {
-        console.error('Error fetching other components:', err);
-      }
-    };
-    fetchTelas();
-    fetchOtros();
-  }, []);
+    fetchComponentCatalog();
+  }, [fetchComponentCatalog]);
+
+  useEffect(() => {
+    fetchProductsCatalog();
+  }, [fetchProductsCatalog, refresh]);
 
   useEffect(() => {
     const onScroll = () => {
@@ -368,6 +462,20 @@ const ProductsPage = () => {
     width: '80%',
     maxWidth: '500px',
   };
+  const updateModalStyle = {
+    position: 'fixed',
+    top: '50%',
+    left: '50%',
+    backgroundColor: '#fff',
+    padding: isMobile ? '16px' : '24px',
+    borderRadius: '8px',
+    zIndex: 1400,
+    width: isMobile ? '92%' : '90%',
+    maxWidth: isMobile ? '420px' : '640px',
+    maxHeight: '80vh',
+    overflowY: 'auto',
+    boxSizing: 'border-box'
+  };
   // Animaciones para popups (detalle y alta/edición)
   const detailModalAnimStyle = {
     ...detailModalStyle,
@@ -381,6 +489,18 @@ const ProductsPage = () => {
     transition: 'opacity 180ms ease'
   });
   const [addClosing, setAddClosing] = useState(false);
+  const closeTypeModal = () => {
+    setShowTypeModal(false);
+    setPendingProductType(null);
+  };
+  const startAddProductWithType = (type) => {
+    const normalizedType = type === 'composite' ? 'composite' : 'simple';
+    setSelectedProduct(null);
+    setModalMode('add');
+    setPendingProductType(normalizedType);
+    setShowTypeModal(false);
+    setShowModal(true);
+  };
   const doCloseDetailModal = () => {
     setDetailClosing(true);
     setTimeout(() => {
@@ -399,7 +519,14 @@ const ProductsPage = () => {
       doCloseDetailModal();
     }
   };
-  const closeAddModal = () => { setAddClosing(true); setTimeout(() => { setShowModal(false); setAddClosing(false); }, 180); };
+  const closeAddModal = () => {
+    setAddClosing(true);
+    setTimeout(() => {
+      setShowModal(false);
+      setAddClosing(false);
+      setPendingProductType(null);
+    }, 180);
+  };
   const commentModalStyle = {
     position: 'fixed',
     top: '50%',
@@ -464,16 +591,23 @@ const ProductsPage = () => {
   const handleOpenAdd = () => {
     setModalMode('add');
     setSelectedProduct(null);
-    setShowModal(true);
+    setPendingProductType(null);
+    setShowTypeModal(true);
   };
   const handleEditProduct = (product) => {
     setModalMode('edit');
-    setSelectedProduct(product);
+    const normalized = product ? { ...product, type: product.type || 'simple' } : product;
+    setSelectedProduct(normalized);
+    setShowTypeModal(false);
+    setPendingProductType(null);
     setShowModal(true);
   };
   const handleCopyProduct = (product) => {
     setModalMode('copy');
-    setSelectedProduct(product);
+    const normalized = product ? { ...product, type: product.type || 'simple' } : product;
+    setSelectedProduct(normalized);
+    setShowTypeModal(false);
+    setPendingProductType(null);
     setShowModal(true);
   };
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -496,6 +630,15 @@ const ProductsPage = () => {
         ...baseEdit,
         ...data,
       };
+      payload.type = data?.type || baseEdit?.type || 'simple';
+      if (payload.type === 'composite') {
+        payload.category = COMPOSITE_CATEGORY;
+        payload.compositeItems = Array.isArray(payload.compositeItems)
+          ? payload.compositeItems.map(item => ({ productId: item?.productId || '' }))
+          : [];
+      } else if ('compositeItems' in payload) {
+        delete payload.compositeItems;
+      }
       if (!payload.componentes) {
         payload.componentes = { telas: [], otros: [] };
       }
@@ -522,6 +665,14 @@ const ProductsPage = () => {
         category: data.category,
         available: data.available,
       };
+      payload.type = data?.type || baseCopy?.type || 'simple';
+      if (payload.type === 'composite') {
+        payload.category = COMPOSITE_CATEGORY;
+        const sourceItems = Array.isArray(baseCopy?.compositeItems) ? baseCopy.compositeItems : [];
+        payload.compositeItems = sourceItems.map(item => ({ productId: item?.productId || '' }));
+      } else if ('compositeItems' in payload) {
+        delete payload.compositeItems;
+      }
       delete payload.id;
       if (!payload.componentes) {
         payload.componentes = { telas: [], otros: [] };
@@ -542,29 +693,40 @@ const ProductsPage = () => {
         body: JSON.stringify(payload)
       });
     } else {
+      const productType = data?.type || pendingProductType || 'simple';
       const priceAdjustments = normalizePriceAdjustments(cloneDefaultAdjustments(), { ensureDefaults: true });
       const modifiersObj = buildModifiersFromAdjustments(priceAdjustments);
       const payload = {
         ...data,
+        type: productType,
+        category: productType === 'composite' ? COMPOSITE_CATEGORY : data.category,
         componentes: { telas: [], otros: [] },
         priceAdjustments,
         pricing: { modificadores: modifiersObj },
         modificadores: modifiersObj,
         defaultsMigrated: true
       };
+      if (productType === 'composite') {
+        payload.category = COMPOSITE_CATEGORY;
+        payload.compositeItems = [];
+      }
       await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
     }
+    await fetchProductsCatalog();
     setRefresh(prev => prev + 1);
     setShowModal(false);
+    setPendingProductType(null);
+    setShowTypeModal(false);
   };
 
   const handleSelectProduct = async (product) => {
     const base = {
       componentes: { telas: [], otros: [] },
+      compositeItems: [],
       costoConfeccion: 0,
     };
     setSaveError(null);
@@ -582,22 +744,20 @@ const ProductsPage = () => {
           freshProduct = await res.json();
         }
       }
-    } catch {}
+    } catch (error) {
+      console.error('Error obteniendo producto actualizado:', error);
+    }
     const productData = freshProduct || product || {};
+    const productType = productData?.type || 'simple';
+
+    if (productType === 'composite' && (!productCatalog || productCatalog.length === 0)) {
+      await fetchProductsCatalog();
+    }
 
     // Traer componentes actualizados para recalcular precios efectivos
-    let latestTelas = null;
-    let latestOtros = null;
-    try {
-      const res = await fetch('/api/components');
-      if (res.ok) {
-        const data = await res.json();
-        latestTelas = (data || []).filter(c => (c.category || '').toLowerCase() === 'telas');
-        latestOtros = (data || []).filter(c => (c.category || '').toLowerCase() !== 'telas');
-        setTelaComponents(latestTelas);
-        setOtherComponents(latestOtros);
-      }
-    } catch {}
+    const catalog = await fetchComponentCatalog();
+    const latestTelas = catalog?.telas || telaComponents;
+    const latestOtros = catalog?.otros || otherComponents;
 
     // Normaliza estructura mínima para evitar errores
     // Construye ajustes a partir de priceAdjustments y pricing.modificadores
@@ -624,47 +784,63 @@ const ProductsPage = () => {
       : (ensureDefaults ? cloneDefaultAdjustments() : []);
     const modifiersObj = buildModifiersFromAdjustments(finalAdjustments);
 
-    // Recalcular precios de filas (telas/otros) con precios/divisor actuales
-    const telasRaw = productData?.componentes?.telas ? [...productData.componentes.telas] : [];
-    const otrosRaw = productData?.componentes?.otros ? [...productData.componentes.otros] : [];
-    const telasRecalc = telasRaw.map(t => {
-      if (!t?.componentId) return { ...t };
-      const comp = (latestTelas || telaComponents || []).find(c => c.id === t.componentId);
-      if (!comp) return { ...t };
-      const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
-      const basePrice = Number(comp?.price) || 0;
-      const precioPorMetro = round2(basePrice / (divisor || 1));
-      const next = { ...t, precioPorMetro };
-      if (next.precioPorMetro && next.anchoTelaCm) {
-        next.valorCm2 = round2(next.precioPorMetro / next.anchoTelaCm);
-      }
-      if (next.anchoCm && next.largoCm) {
-        next.materialPuroCm2 = round2((next.anchoCm * next.largoCm) / 100);
-      }
-      if (next.materialPuroCm2 != null && next.porcentajeDesperdicio != null) {
-        next.totalMaterialCm2 = round2(next.materialPuroCm2 * (1 + next.porcentajeDesperdicio / 100));
-      }
-      if (next.totalMaterialCm2 != null && next.valorCm2 != null) {
-        next.costoMaterial = round2(next.totalMaterialCm2 * next.valorCm2);
-      }
-      return next;
-    });
-    const otrosRecalc = otrosRaw.map(o => {
-      if (!o?.componentId) return { ...o };
-      const comp = (latestOtros || otherComponents || []).find(c => c.id === o.componentId);
-      if (!comp) return { ...o };
-      const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
-      const basePrice = Number(comp?.price) || 0;
-      const precioUnitario = round2(basePrice / (divisor || 1));
-      return { ...o, precioUnitario };
-    });
+    // Recalcular precios de filas (telas/otros) con precios/divisor actuales cuando aplique
+    const telasRaw = (productType === 'simple' && productData?.componentes?.telas)
+      ? [...productData.componentes.telas]
+      : [];
+    const otrosRaw = (productType === 'simple' && productData?.componentes?.otros)
+      ? [...productData.componentes.otros]
+      : [];
+    const telasRecalc = productType === 'simple'
+      ? telasRaw.map(t => {
+          if (!t?.componentId) return { ...t };
+          const comp = (latestTelas || telaComponents || []).find(c => c.id === t.componentId);
+          if (!comp) return { ...t };
+          const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
+          const basePrice = Number(comp?.price) || 0;
+          const precioPorMetro = round2(basePrice / (divisor || 1));
+          const next = { ...t, precioPorMetro };
+          if (next.precioPorMetro && next.anchoTelaCm) {
+            next.valorCm2 = round2(next.precioPorMetro / next.anchoTelaCm);
+          }
+          if (next.anchoCm && next.largoCm) {
+            next.materialPuroCm2 = round2((next.anchoCm * next.largoCm) / 100);
+          }
+          if (next.materialPuroCm2 != null && next.porcentajeDesperdicio != null) {
+            next.totalMaterialCm2 = round2(next.materialPuroCm2 * (1 + next.porcentajeDesperdicio / 100));
+          }
+          if (next.totalMaterialCm2 != null && next.valorCm2 != null) {
+            next.costoMaterial = round2(next.totalMaterialCm2 * next.valorCm2);
+          }
+          return next;
+        })
+      : [];
+    const otrosRecalc = productType === 'simple'
+      ? otrosRaw.map(o => {
+          if (!o?.componentId) return { ...o };
+          const comp = (latestOtros || otherComponents || []).find(c => c.id === o.componentId);
+          if (!comp) return { ...o };
+          const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
+          const basePrice = Number(comp?.price) || 0;
+          const precioUnitario = round2(basePrice / (divisor || 1));
+          return { ...o, precioUnitario };
+        })
+      : [];
+
+    const normalizedCompositeItems = productType === 'composite'
+      ? (Array.isArray(productData?.compositeItems)
+          ? productData.compositeItems.map(item => ({
+              productId: item?.productId || '',
+            }))
+          : [])
+      : [];
 
     const normalized = {
       ...productData,
-      componentes: {
-        telas: telasRecalc,
-        otros: otrosRecalc,
-      },
+      type: productType,
+      componentes: productType === 'simple'
+        ? { telas: telasRecalc, otros: otrosRecalc }
+        : { telas: [], otros: [] },
       priceAdjustments: finalAdjustments,
       pricing: {
         ...(productData?.pricing && typeof productData.pricing === 'object' ? productData.pricing : {}),
@@ -673,6 +849,14 @@ const ProductsPage = () => {
       modificadores: modifiersObj,
       defaultsMigrated: productData?.defaultsMigrated || ensureDefaults
     };
+
+    if (productType === 'composite') {
+      normalized.compositeItems = normalizedCompositeItems;
+      normalized.category = COMPOSITE_CATEGORY;
+    } else if ('compositeItems' in normalized) {
+      delete normalized.compositeItems;
+    }
+
     setDetailProduct({ ...base, ...normalized });
     setShowDetailModal(true);
   };
@@ -701,6 +885,36 @@ const ProductsPage = () => {
 
   const buildPersistPayload = useCallback((product) => {
     if (!product) return null;
+    const productType = product?.type || 'simple';
+    const sanitizedAdjustments = normalizePriceAdjustments(product?.priceAdjustments || []);
+    const modifiersObj = buildModifiersFromAdjustments(sanitizedAdjustments);
+
+    if (productType === 'composite') {
+      const compositeItems = Array.isArray(product?.compositeItems)
+        ? product.compositeItems
+            .map(item => ({ productId: item?.productId || '' }))
+            .filter(item => item.productId)
+        : [];
+      return {
+        ...product,
+        type: 'composite',
+        category: COMPOSITE_CATEGORY,
+        compositeItems,
+        componentes: { telas: [], otros: [] },
+        priceAdjustments: sanitizedAdjustments.map(a => ({
+          name: a.name,
+          percent: round2(Number(a.percent))
+        })),
+        pricing: {
+          ...(product?.pricing || {}),
+          modificadores: modifiersObj
+        },
+        costoConfeccion: Number(product?.costoConfeccion) || 0,
+        modificadores: modifiersObj,
+        defaultsMigrated: true
+      };
+    }
+
     const telas = (product.componentes?.telas || []).filter(t => t.componentId);
     const otrosRaw = product.componentes?.otros || [];
     const otrosRows = otrosRaw.map(o => {
@@ -716,11 +930,9 @@ const ProductsPage = () => {
       ? round2(otrosConfeccionTotal)
       : (Number(product?.costoConfeccion) || 0);
 
-    const sanitizedAdjustments = normalizePriceAdjustments(product?.priceAdjustments || []);
-    const modifiersObj = buildModifiersFromAdjustments(sanitizedAdjustments);
-
-    return {
+    const payload = {
       ...product,
+      type: 'simple',
       componentes: {
         ...product.componentes,
         telas,
@@ -743,7 +955,11 @@ const ProductsPage = () => {
       modificadores: modifiersObj,
       defaultsMigrated: true
     };
-  }, [otherById, isConfeccionName]);
+    if ('compositeItems' in payload) {
+      delete payload.compositeItems;
+    }
+    return payload;
+  }, [otherById]);
 
   const persistDetail = useCallback(async () => {
     const current = latestDetailRef.current;
@@ -763,6 +979,7 @@ const ProductsPage = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      await fetchProductsCatalog();
       detailUpdatedRef.current = true;
       setDetailProduct(prev => {
         if (!prev) return prev;
@@ -785,7 +1002,7 @@ const ProductsPage = () => {
     } finally {
       setIsSaving(false);
     }
-  }, [buildPersistPayload]);
+  }, [buildPersistPayload, fetchProductsCatalog]);
 
   const schedulePersist = useCallback(() => {
     if (!latestDetailRef.current?.id) return;
@@ -799,7 +1016,7 @@ const ProductsPage = () => {
     }, 800);
   }, [persistDetail]);
 
-  const withHistory = useCallback((updateFn, options = {}) => {
+  const withHistory = useCallback((updateFn) => {
     let snapshot = null;
     let changed = false;
     setDetailProduct(prev => {
@@ -821,7 +1038,77 @@ const ProductsPage = () => {
       setCanUndo(true);
     }
     setIsDirty(true);
-  }, [schedulePersist]);
+  }, []);
+
+  const recalcDetailWithComponentPrices = useCallback((product, telasCatalogParam, otrosCatalogParam) => {
+    if (!product) return product;
+    const telasCatalog = Array.isArray(telasCatalogParam) ? telasCatalogParam : telaComponents;
+    const otrosCatalog = Array.isArray(otrosCatalogParam) ? otrosCatalogParam : otherComponents;
+    const telasMap = Object.fromEntries((telasCatalog || []).map(c => [c.id, c]));
+    const otrosMap = Object.fromEntries((otrosCatalog || []).map(c => [c.id, c]));
+    let changed = false;
+
+    const assignValue = (target, key, value) => {
+      const prevVal = target[key];
+      const bothNullish = prevVal == null && value == null;
+      const bothNaN = Number.isNaN(prevVal) && Number.isNaN(value);
+      if (bothNullish || bothNaN) return false;
+      if (prevVal === value) return false;
+      target[key] = value;
+      return true;
+    };
+
+    const telas = (product.componentes?.telas || []).map(row => {
+      if (!row?.componentId) return row;
+      const comp = telasMap[row.componentId];
+      if (!comp) return row;
+      const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
+      const basePrice = Number(comp?.price) || 0;
+      const precioPorMetro = round2(basePrice / (divisor || 1));
+      const updated = { ...row };
+      let localChanged = false;
+      localChanged = assignValue(updated, 'precioPorMetro', precioPorMetro) || localChanged;
+      if (updated.precioPorMetro && updated.anchoTelaCm) {
+        localChanged = assignValue(updated, 'valorCm2', round2(updated.precioPorMetro / updated.anchoTelaCm)) || localChanged;
+      }
+      if (updated.anchoCm && updated.largoCm) {
+        localChanged = assignValue(updated, 'materialPuroCm2', round2((updated.anchoCm * updated.largoCm) / 100)) || localChanged;
+      }
+      if (updated.materialPuroCm2 != null && updated.porcentajeDesperdicio != null) {
+        localChanged = assignValue(updated, 'totalMaterialCm2', round2(updated.materialPuroCm2 * (1 + updated.porcentajeDesperdicio / 100))) || localChanged;
+      }
+      if (updated.totalMaterialCm2 != null && updated.valorCm2 != null) {
+        localChanged = assignValue(updated, 'costoMaterial', round2(updated.totalMaterialCm2 * updated.valorCm2)) || localChanged;
+      }
+      if (!localChanged) return row;
+      changed = true;
+      return updated;
+    });
+
+    const otros = (product.componentes?.otros || []).map(row => {
+      if (!row?.componentId) return row;
+      const comp = otrosMap[row.componentId];
+      if (!comp) return row;
+      const divisor = Number(comp?.unitDivisor) > 0 ? Number(comp.unitDivisor) : 1;
+      const basePrice = Number(comp?.price) || 0;
+      const precioUnitario = round2(basePrice / (divisor || 1));
+      const updated = { ...row };
+      const localChanged = assignValue(updated, 'precioUnitario', precioUnitario);
+      if (!localChanged) return row;
+      changed = true;
+      return updated;
+    });
+
+    if (!changed) return product;
+    return {
+      ...product,
+      componentes: {
+        ...product.componentes,
+        telas,
+        otros,
+      }
+    };
+  }, [telaComponents, otherComponents]);
 
   const handleUndo = useCallback(() => {
     if (!canUndo || detailHistoryRef.current.length === 0) return;
@@ -953,7 +1240,9 @@ const ProductsPage = () => {
 
   function applySelectorOption(component) {
     if (!component) return;
-    if (selectorMode === 'tela') {
+    if (selectorMode === 'product') {
+      handleCompositeItemChange(selectorIndex, component.id);
+    } else if (selectorMode === 'tela') {
       handleTelaChange(selectorIndex, 'componentId', component.id);
     } else {
       handleOtroChange(selectorIndex, 'componentId', component.id);
@@ -1132,6 +1421,40 @@ const ProductsPage = () => {
     }));
   };
 
+  const addCompositeItem = () => {
+    withHistory(prev => ({
+      ...prev,
+      compositeItems: [
+        ...(Array.isArray(prev?.compositeItems) ? prev.compositeItems : []),
+        { productId: '' }
+      ]
+    }));
+  };
+
+  const handleCompositeItemChange = (idx, productId) => {
+    withHistory(prev => {
+      const items = Array.isArray(prev?.compositeItems) ? [...prev.compositeItems] : [];
+      if (!items[idx]) return prev;
+      items[idx] = { productId: productId || '' };
+      return {
+        ...prev,
+        compositeItems: items
+      };
+    });
+  };
+
+  const removeCompositeItem = (idx) => {
+    withHistory(prev => {
+      const items = Array.isArray(prev?.compositeItems) ? prev.compositeItems.slice() : [];
+      if (!items[idx]) return prev;
+      items.splice(idx, 1);
+      return {
+        ...prev,
+        compositeItems: items
+      };
+    });
+  };
+
   const handleRemoveOtro = (idx) => {
     withHistory(prev => {
       const newOtros = (prev.componentes?.otros || []).filter((_, i) => i !== idx);
@@ -1161,29 +1484,212 @@ const ProductsPage = () => {
     setIsDirty(true);
   };
 
+  const handleUpdateProductComponents = async () => {
+    if (!detailProduct) return;
+    if (!detailUpdateCandidates.length) {
+      setResults([]);
+      setResultsClosing(false);
+      setShowResultsPopup(true);
+      return;
+    }
+
+    cancelUpdateRef.current = false;
+    setUpdatingProductName(detailProduct?.name || '');
+    setCurrentIndex(-1);
+    setResults([]);
+    setResultsClosing(false);
+    setUpdatingClosing(false);
+    setShowResultsPopup(false);
+    setShowUpdatingPopup(true);
+
+    const initialProgress = detailUpdateCandidates.map(item => ({
+      id: item.component.id,
+      name: item.component.name,
+      category: item.component.category,
+      type: item.type,
+      status: 'pending',
+      oldPrice: item.component.price,
+      newPrice: null,
+      error: null
+    }));
+    setProgressItems(initialProgress);
+
+    const localResults = [];
+
+    for (let i = 0; i < detailUpdateCandidates.length; i++) {
+      if (cancelUpdateRef.current) break;
+
+      setCurrentIndex(i);
+      setProgressItems(prev => prev.map((p, idx) => idx === i ? { ...p, status: 'updating' } : p));
+
+      const { component, type } = detailUpdateCandidates[i];
+      if (!component?.link) {
+        const errorMessage = 'Componente sin link valido';
+        setProgressItems(prev => prev.map((p, idx) => idx === i ? { ...p, status: 'error', error: errorMessage } : p));
+        localResults.push({
+          name: component?.name || 'Desconocido',
+          category: component?.category,
+          type,
+          oldPrice: component?.price,
+          newPrice: null,
+          status: 'error',
+          error: errorMessage
+        });
+        continue;
+      }
+
+      const priceController = new AbortController();
+      const saveController = new AbortController();
+      activeControllersRef.current.price = priceController;
+      activeControllersRef.current.save = saveController;
+
+      try {
+        const res = await fetch(
+          `${scraperEndpoint}?url=${encodeURIComponent(component.link)}`,
+          { signal: priceController.signal }
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error('Respuesta no OK del scraper');
+
+        const newPrice = data.price;
+        const saveRes = await fetch(
+          `${apiBase}/components/${component.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...component, price: newPrice, autoPriceFailed: false }),
+            signal: saveController.signal
+          }
+        );
+        if (!saveRes.ok) throw new Error('Error al guardar el precio');
+
+        setProgressItems(prev => prev.map((p, idx) => idx === i ? { ...p, status: 'success', newPrice } : p));
+        localResults.push({
+          name: component.name,
+          category: component.category,
+          type,
+          oldPrice: component.price,
+          newPrice,
+          status: 'success',
+          error: null
+        });
+      } catch (error) {
+        console.error(`Error autocompletando precio para ${component?.name}:`, error);
+        const errorMessage = String(error?.message || error);
+        setProgressItems(prev => prev.map((p, idx) => idx === i ? { ...p, status: 'error', error: errorMessage } : p));
+        localResults.push({
+          name: component?.name || 'Desconocido',
+          category: component?.category,
+          type,
+          oldPrice: component?.price,
+          newPrice: null,
+          status: 'error',
+          error: errorMessage
+        });
+        const aborted = error?.name === 'AbortError' || cancelUpdateRef.current;
+        if (!aborted && component?.id) {
+          try {
+            await fetch(
+              `${apiBase}/components/${component.id}`,
+              {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...component, autoPriceFailed: true })
+              }
+            );
+          } catch (flagError) {
+            console.error('No se pudo marcar el componente con error de autocompletado de precio:', flagError);
+          }
+        }
+      } finally {
+        activeControllersRef.current.price = null;
+        activeControllersRef.current.save = null;
+      }
+    }
+
+    cancelUpdateRef.current = false;
+
+    const catalog = await fetchComponentCatalog();
+    const telasCatalog = catalog?.telas || telaComponents;
+    const otrosCatalog = catalog?.otros || otherComponents;
+
+    if (localResults.some(r => r.status === 'success')) {
+      withHistory(prev => recalcDetailWithComponentPrices(prev, telasCatalog, otrosCatalog));
+    }
+
+    setUpdatingClosing(true);
+    setTimeout(() => {
+      setShowUpdatingPopup(false);
+      setUpdatingClosing(false);
+    }, 180);
+    setResults(localResults);
+    setResultsClosing(false);
+    setShowResultsPopup(true);
+    setCurrentIndex(-1);
+  };
+
   // Totales calculados (excluyendo confección de "otros" si corresponde)
-  const telasTotal = (detailProduct?.componentes?.telas || [])
-    .reduce((acc, t) => acc + (Number(t.costoMaterial) || 0), 0);
-  const otrosRows = (detailProduct?.componentes?.otros || []).map(o => {
-    const compName = otherById[o.componentId]?.name;
-    const tagConf = isConfeccionName(compName);
-    const unidades = Number(o.unidades) || 0;
-    const precio = Number(o.precioUnitario) || 0;
-    const total = unidades * precio;
-    return { ref: o, _isConfeccion: tagConf, _total: total };
-  });
-  const otrosNoConfeccionTotal = otrosRows
-    .filter(r => !r._isConfeccion)
-    .reduce((acc, r) => acc + r._total, 0);
-  const otrosConfeccionTotal = otrosRows
-    .filter(r => r._isConfeccion)
-    .reduce((acc, r) => acc + r._total, 0);
-  const hasConfeccionRows = otrosRows.some(r => r._isConfeccion);
-  const productoTotal = round2(telasTotal + otrosNoConfeccionTotal);
-  const costoConfeccionEffective = hasConfeccionRows
+  const isCompositeProduct = (detailProduct?.type || 'simple') === 'composite';
+  const compositeItemsDetail = isCompositeProduct ? (detailProduct?.compositeItems || []) : [];
+  const compositeBreakdown = isCompositeProduct
+    ? compositeItemsDetail.map(item => {
+        const refProduct = productById[item?.productId];
+        const totals = computeReferencedProductTotals(refProduct);
+        return {
+          item,
+          product: refProduct || null,
+          subtotal: totals.subtotal,
+          totalConConfeccion: totals.totalConConfeccion
+        };
+      })
+    : [];
+  const compositeSubtotal = isCompositeProduct
+    ? round2(compositeBreakdown.reduce((acc, row) => acc + (row.subtotal || 0), 0))
+    : 0;
+  const compositeTotalConConfeccion = isCompositeProduct
+    ? round2(compositeBreakdown.reduce((acc, row) => acc + (row.totalConConfeccion || 0), 0))
+    : 0;
+
+  const telasTotal = isCompositeProduct
+    ? 0
+    : (detailProduct?.componentes?.telas || [])
+        .reduce((acc, t) => acc + (Number(t.costoMaterial) || 0), 0);
+  const otrosRows = isCompositeProduct
+    ? []
+    : (detailProduct?.componentes?.otros || []).map(o => {
+        const compName = otherById[o.componentId]?.name;
+        const explicitTag = o?.tagConfeccion;
+        const tagConf = explicitTag != null ? Boolean(explicitTag) : isConfeccionName(compName);
+        const unidades = Number(o.unidades) || 0;
+        const precio = Number(o.precioUnitario) || 0;
+        const total = unidades * precio;
+        return { ref: o, _isConfeccion: tagConf, _total: total };
+      });
+  const otrosNoConfeccionTotal = isCompositeProduct
+    ? 0
+    : otrosRows
+        .filter(r => !r._isConfeccion)
+        .reduce((acc, r) => acc + r._total, 0);
+  const otrosConfeccionTotal = isCompositeProduct
+    ? 0
+    : otrosRows
+        .filter(r => r._isConfeccion)
+        .reduce((acc, r) => acc + r._total, 0);
+  const hasConfeccionRows = isCompositeProduct ? false : otrosRows.some(r => r._isConfeccion);
+
+  const simpleProductoTotal = round2(telasTotal + otrosNoConfeccionTotal);
+  const simpleCostoConfeccion = hasConfeccionRows
     ? round2(otrosConfeccionTotal)
     : (Number(detailProduct?.costoConfeccion) || 0);
-  const totalConConfeccion = round2(productoTotal + costoConfeccionEffective);
+  const simpleTotalConConfeccion = round2(simpleProductoTotal + simpleCostoConfeccion);
+
+  const productoTotal = isCompositeProduct ? compositeSubtotal : simpleProductoTotal;
+  const costoConfeccionEffective = isCompositeProduct
+    ? round2(Math.max(0, compositeTotalConConfeccion - compositeSubtotal))
+    : simpleCostoConfeccion;
+  const totalConConfeccion = isCompositeProduct
+    ? compositeTotalConConfeccion
+    : simpleTotalConConfeccion;
 
   // Ajustes porcentuales por producto (persistentes)
   const addAdjustment = () => {
@@ -1222,6 +1728,154 @@ const ProductsPage = () => {
         onCopyProduct={handleCopyProduct}
         onDeleteProduct={handleDeleteProduct}
       />
+      {showUpdatingPopup && (
+        <>
+          <div style={{ ...overlayFade(updatingClosing), zIndex: 1399 }} />
+          <div
+            style={{
+              ...updateModalStyle,
+              opacity: updatingClosing ? 0 : 1,
+              transform: `translate(-50%, -50%) ${updatingClosing ? 'scale(0.98)' : 'scale(1)'}`,
+              transition: 'opacity 180ms ease, transform 180ms ease'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <p style={{ margin: 0 }}>
+                Actualizando precios Casa Nacho{updatingProductName ? ` — Producto: ${updatingProductName}` : ''}
+              </p>
+              <button
+                onClick={() => {
+                  cancelUpdateRef.current = true;
+                  try {
+                    activeControllersRef.current.price?.abort();
+                  } catch (error) {
+                    console.warn('No se pudo cancelar la actualización de precio', error);
+                  }
+                  try {
+                    activeControllersRef.current.save?.abort();
+                  } catch (error) {
+                    console.warn('No se pudo cancelar la solicitud de guardado', error);
+                  }
+                }}
+                style={{ padding: '6px 10px', background: '#eee', border: '1px solid #ccc', borderRadius: 6, cursor: 'pointer' }}
+              >
+                Cancelar
+              </button>
+            </div>
+            {currentIndex >= 0 && progressItems[currentIndex] && (
+              <div style={{ marginTop: 10, padding: '10px 12px', background: '#f8f8f8', borderRadius: 6 }}>
+                Procesando: <strong>{progressItems[currentIndex].name}</strong> ({currentIndex + 1} de {progressItems.length})
+              </div>
+            )}
+            <div style={{ maxHeight: 320, overflowY: 'auto', marginTop: 12 }}>
+              {progressItems.map(p => (
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #eee' }}>
+                  <span style={{ width: 16, textAlign: 'center' }}>
+                    {p.status === 'pending' && '…'}
+                    {p.status === 'updating' && '⏳'}
+                    {p.status === 'success' && '✅'}
+                    {p.status === 'error' && '❌'}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600 }}>{p.name}</div>
+                    <div style={{ fontSize: 12, color: '#666', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span>Tipo: {p.type === 'tela' ? 'Tela' : 'Otro material'}{p.category ? ` · Categoría: ${p.category}` : ''}</span>
+                      {p.status === 'success' && (
+                        <span>Precio: {p.oldPrice} → {p.newPrice}</span>
+                      )}
+                      {p.status === 'error' && (
+                        <span>{p.error || 'Error al actualizar'}</span>
+                      )}
+                      {p.status === 'pending' && <span>En cola</span>}
+                      {p.status === 'updating' && <span>Actualizando…</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+      {showResultsPopup && (
+        <>
+          <div
+            style={{ ...overlayFade(resultsClosing), zIndex: 1399 }}
+            onClick={() => {
+              setResultsClosing(true);
+              setTimeout(() => {
+                setShowResultsPopup(false);
+                setResultsClosing(false);
+              }, 180);
+            }}
+          />
+          <div
+            style={{
+              ...updateModalStyle,
+              zIndex: 1401,
+              opacity: resultsClosing ? 0 : 1,
+              transform: `translate(-50%, -50%) ${resultsClosing ? 'scale(0.98)' : 'scale(1)'}`,
+              transition: 'opacity 180ms ease, transform 180ms ease'
+            }}
+          >
+            <button
+              style={closeButtonStyle}
+              onClick={() => {
+                setResultsClosing(true);
+                setTimeout(() => {
+                  setShowResultsPopup(false);
+                  setResultsClosing(false);
+                }, 180);
+              }}
+            >
+              X
+            </button>
+            <h3 style={{ marginTop: 0 }}>Informe de actualización</h3>
+            {updatingProductName ? (
+              <p style={{ marginTop: 0 }}>Producto: <strong>{updatingProductName}</strong></p>
+            ) : null}
+            <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+              {results.length === 0 && (
+                <div>No hubo actualizaciones.</div>
+              )}
+              {results.map((r, idx) => (
+                <div key={`${r.name || 'item'}-${idx}`} style={{ marginBottom: '14px', paddingBottom: 10, borderBottom: '1px solid #eee' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>{r.status === 'success' ? '✅' : '❌'}</span>
+                    <strong>{r.name}</strong>
+                  </div>
+                  <div style={{ fontSize: 13, color: '#444', marginLeft: 24 }}>
+                    <div>Tipo: {r.type === 'tela' ? 'Tela' : 'Otro material'}</div>
+                    {r.category ? <div>Categoría: {r.category}</div> : null}
+                    {r.status === 'success' ? (
+                      <div>Precio: {r.oldPrice} → {r.newPrice}</div>
+                    ) : (
+                      <div>Error: {r.error || 'No se pudo actualizar'}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+      {showTypeModal && (
+        <>
+          <div style={overlayStyle} onClick={closeTypeModal} />
+          <div style={{ ...addModalStyle, maxWidth: '420px', textAlign: 'center' }}>
+            <button style={closeButtonStyle} onClick={closeTypeModal}>X</button>
+            <h3 style={{ marginTop: 0 }}>¿Qué tipo de producto querés crear?</h3>
+            <p style={{ marginBottom: 16 }}>Elegí si vas a cargar un producto simple o un set/conjunto.</p>
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 12, justifyContent: 'center' }}>
+              <button onClick={() => startAddProductWithType('simple')} style={{ flex: isMobile ? '1 1 auto' : '0 0 auto' }}>
+                Producto simple
+              </button>
+              <button onClick={() => startAddProductWithType('composite')} style={{ flex: isMobile ? '1 1 auto' : '0 0 auto' }}>
+                Producto compuesto (set)
+              </button>
+            </div>
+          </div>
+        </>
+      )}
       {showModal && (
         <>
           <div style={overlayFade(addClosing)} onClick={closeAddModal} />
@@ -1230,11 +1884,31 @@ const ProductsPage = () => {
             <ProductForm
               mode={modalMode}
               initialValues={
-                modalMode === 'copy'
-                  ? { ...selectedProduct, name: `Copia de ${selectedProduct.name}` }
-                  : modalMode === 'edit'
-                  ? selectedProduct
-                  : {}
+                (modalMode === 'copy' && selectedProduct)
+                  ? {
+                      ...selectedProduct,
+                      type: selectedProduct.type || 'simple',
+                      category: (selectedProduct.type || 'simple') === 'composite'
+                        ? COMPOSITE_CATEGORY
+                        : selectedProduct.category,
+                      name: `Copia de ${selectedProduct.name}`
+                    }
+                  : (modalMode === 'edit' && selectedProduct)
+                    ? {
+                        ...selectedProduct,
+                        type: selectedProduct.type || 'simple',
+                        category: (selectedProduct.type || 'simple') === 'composite'
+                          ? COMPOSITE_CATEGORY
+                          : selectedProduct.category
+                      }
+                    : {
+                        name: '',
+                        category: (pendingProductType || 'simple') === 'composite'
+                          ? COMPOSITE_CATEGORY
+                          : '',
+                        available: '',
+                        type: pendingProductType || 'simple'
+                      }
               }
               onProductSubmit={handleProductSubmit}
             />
@@ -1246,11 +1920,155 @@ const ProductsPage = () => {
           <div style={overlayFade(detailClosing)} onClick={requestCloseDetailModal} />
           <div style={detailModalAnimStyle} className="product-detail-modal">
             <button style={closeButtonStyle} onClick={requestCloseDetailModal}>X</button>
-            <div style={{ width: '90%', margin: '0 auto', marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 style={{ margin: 0, textAlign: 'left' }}>{detailProduct.name}</h2>
-              <button onClick={openProductComments}>Ver comentarios</button>
+            <div style={{ width: '90%', margin: '0 auto', marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+              <h2 style={{ margin: 0, textAlign: 'left' }}>{detailProduct?.name}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                {!isCompositeProduct && (
+                  <button
+                    onClick={handleUpdateProductComponents}
+                    disabled={updateButtonDisabled}
+                    title={canBulkUpdateComponents
+                      ? 'Actualizar los precios de los componentes con link de Casa Nacho'
+                      : 'No hay componentes con link de Casa Nacho para actualizar'}
+                  >
+                    Actualizar precios de componentes
+                  </button>
+                )}
+                <button onClick={openProductComments}>Ver comentarios</button>
+              </div>
             </div>
             <div>
+                {isCompositeProduct && (
+                  <div
+                    style={{
+                      width: isMobile ? '100%' : (isCompactDesktop ? '100%' : '80%'),
+                      margin: '0 auto',
+                      padding: (isMobile || isCompactDesktop) ? '0 10px' : 0,
+                      display: isMobile ? 'block' : 'grid',
+                      gridTemplateColumns: isMobile ? '1fr' : '1fr 260px',
+                      gap: isMobile ? 16 : 24,
+                      alignItems: 'flex-start'
+                    }}
+                  >
+                    <div>
+                      <h3 style={{ marginTop: '16px', marginBottom: '8px', textAlign: 'left' }}>Productos que conforman el set / conjunto</h3>
+                      <div style={{ overflowX: (isMobile || isCompactDesktop) ? 'auto' : 'visible' }}>
+                        <table style={{
+                          width: isMobile ? '640px' : '100%',
+                          marginBottom: '16px',
+                          borderCollapse: 'separate',
+                          borderSpacing: '4px',
+                          border: '1px solid #ccc'
+                        }}>
+                          <thead>
+                            <tr>
+                              <th style={{ border: '1px solid #ccc', padding: '8px' }}>Producto</th>
+                              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right', width: '220px' }}>Precio producto</th>
+                              <th style={{ border: '1px solid #ccc', padding: '8px', width: '120px' }}>Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(detailProduct?.compositeItems && detailProduct.compositeItems.length > 0) ? (
+                              detailProduct.compositeItems.map((item, idx) => {
+                                const breakdown = compositeBreakdown[idx] || {};
+                                const selected = breakdown.product;
+                                const priceValue = breakdown.totalConConfeccion || 0;
+                                return (
+                                  <tr key={`composite-item-${idx}`}>
+                                    <td style={{ border: '1px solid #ccc', padding: '8px' }}>
+                                      <button onClick={() => openSelector('product', idx)}>Seleccionar producto</button>
+                                      <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
+                                        {selected ? (
+                                          <>
+                                            <div>{selected.name}</div>
+                                            {selected.category ? <div style={{ color: '#888' }}>Categoría: {selected.category}</div> : null}
+                                          </>
+                                        ) : (
+                                          <div style={{ color: '#999' }}>Sin producto seleccionado</div>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right' }}>
+                                      {selected ? `$ ${fmt2(priceValue)}` : '—'}
+                                    </td>
+                                    <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'center' }}>
+                                      <button onClick={() => removeCompositeItem(idx)}>- Eliminar</button>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            ) : (
+                              <tr>
+                                <td colSpan={3} style={{ border: '1px solid #ccc', padding: '12px', textAlign: 'center', color: '#777' }}>
+                                  Aún no agregaste productos al set.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          gap: '12px',
+                          flexWrap: 'wrap',
+                          marginBottom: '24px'
+                        }}
+                      >
+                        <button onClick={addCompositeItem}>+ Agregar producto</button>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        width: isCompactDesktop ? '100%' : 260,
+                        maxWidth: isCompactDesktop ? 360 : 280,
+                        margin: isCompactDesktop ? '0 auto' : 0,
+                        justifySelf: isMobile ? 'stretch' : 'end',
+                        display: 'flex',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      {detailProduct?.image ? (
+                        <div style={{
+                          width: '100%',
+                          maxWidth: '100%',
+                          border: '1px solid #ccc',
+                          borderRadius: 6,
+                          background: '#f5f5f5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: 8,
+                          maxHeight: 340
+                        }}>
+                          <img
+                            src={detailProduct.image}
+                            alt={detailProduct.name}
+                            style={{ width: '100%', height: 'auto', maxHeight: 320, objectFit: 'contain', borderRadius: 4 }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{
+                          width: '100%',
+                          height: 200,
+                          border: '1px solid #ccc',
+                          borderRadius: 6,
+                          background: '#fafafa',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#999'
+                        }}>
+                          Sin imagen
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {!isCompositeProduct && (
+                  <>
                 {/* Sección TELAS - ancho 80% escritorio / 100% mobile; en mobile, tabla scrolleable horizontal */}
                 <div style={{
                   width: isMobile ? '100%' : (isCompactDesktop ? '100%' : '80%'),
@@ -1737,6 +2555,8 @@ const ProductsPage = () => {
                     </div>
                   </div>
                 )}
+                  </>
+                )}
 
                 {/* Sección Costo Confección + Totales + Ajustes, ancho 80% escritorio / 100% mobile */}
                 <div style={{
@@ -1745,28 +2565,45 @@ const ProductsPage = () => {
                   padding: (isMobile || isCompactDesktop) ? '0 10px' : 0
                 }}>
                   {/* Totales */}
-                  <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
-                    <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (confección)</label>
-                      <input type="text" value={`$ ${fmt2(costoConfeccionEffective)}`} disabled style={{ width: '100%' }} />
+                  {isCompositeProduct ? (
+                    <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total productos seleccionados</label>
+                        <input type="text" value={`$ ${fmt2(productoTotal)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Ajuste confección acumulado</label>
+                        <input type="text" value={`$ ${fmt2(costoConfeccionEffective)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total set (productos + confección)</label>
+                        <input type="text" value={`$ ${fmt2(totalConConfeccion)}`} disabled style={{ width: '100%' }} />
+                      </div>
                     </div>
-                    <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas)</label>
-                      <input type="text" value={`$ ${fmt2(telasTotal)}`} disabled style={{ width: '100%' }} />
+                  ) : (
+                    <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total (confección)</label>
+                        <input type="text" value={`$ ${fmt2(costoConfeccionEffective)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas)</label>
+                        <input type="text" value={`$ ${fmt2(telasTotal)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total (otros materiales)</label>
+                        <input type="text" value={`$ ${fmt2(otrosNoConfeccionTotal)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales)</label>
+                        <input type="text" value={`$ ${fmt2(productoTotal)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales + confección)</label>
+                        <input type="text" value={`$ ${fmt2(totalConConfeccion)}`} disabled style={{ width: '100%' }} />
+                      </div>
                     </div>
-                    <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (otros materiales)</label>
-                      <input type="text" value={`$ ${fmt2(otrosNoConfeccionTotal)}`} disabled style={{ width: '100%' }} />
-                    </div>
-                    <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales)</label>
-                      <input type="text" value={`$ ${fmt2(productoTotal)}`} disabled style={{ width: '100%' }} />
-                    </div>
-                    <div style={{ flex: '1 1 260px' }}>
-                      <label style={{ display: 'block', fontWeight: 'bold' }}>Total (telas + otros materiales + confección)</label>
-                      <input type="text" value={`$ ${fmt2(totalConConfeccion)}`} disabled style={{ width: '100%' }} />
-                    </div>
-                  </div>
+                  )}
 
                   {/* Ajustes porcentuales */}
                   <h3 style={{ width: '100%', margin: 0, textAlign: 'left', marginTop: '8px', marginBottom: '8px' }}>Precio corregido porcentualmente</h3>
@@ -1963,11 +2800,19 @@ const ProductsPage = () => {
           <div style={selectorModalStyle} onKeyDown={handleSelectorKeyDown}>
             <button style={closeButtonStyle} onClick={closeSelector}>X</button>
             <h3 style={{ marginTop: 0, marginBottom: 12 }}>
-              {selectorMode === 'tela' ? 'Seleccionar Tela' : 'Seleccionar Componente'}
+              {selectorMode === 'tela'
+                ? 'Seleccionar Tela'
+                : selectorMode === 'otro'
+                  ? 'Seleccionar Componente'
+                  : 'Seleccionar Producto'}
             </h3>
             <input
               type="text"
-              placeholder={selectorMode === 'tela' ? 'Buscar tela...' : 'Buscar componente...'}
+              placeholder={selectorMode === 'tela'
+                ? 'Buscar tela...'
+                : selectorMode === 'otro'
+                  ? 'Buscar componente...'
+                  : 'Buscar producto...'}
               value={selectorSearch}
               onChange={e => setSelectorSearch(e.target.value)}
               ref={selectorInputRef}
@@ -1980,11 +2825,30 @@ const ProductsPage = () => {
             >
               {selectorOptions.map((c, idx) => {
                 const isActive = idx === selectorHighlight;
-                const priceNumber = Number(c?.price);
-                const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
-                const availableNumber = Number(c?.available);
-                const availableValue = Number.isFinite(availableNumber) ? availableNumber.toFixed(2) : '0.00';
-                const availabilityLabel = selectorMode === 'tela' ? 'Disponible (m)' : 'Disponible';
+                const isProductOption = selectorMode === 'product';
+                const secondaryLines = [];
+                if (isProductOption) {
+                  const totals = computeReferencedProductTotals(c);
+                  if (c?.category) {
+                    secondaryLines.push(`Categoría: ${c.category}`);
+                  }
+                  const availableLabel = Number.isFinite(Number(c?.available))
+                    ? `Disponible: ${Number(c.available)}`
+                    : null;
+                  secondaryLines.push(`Total (telas + otros + confección): $ ${fmt2(totals.totalConConfeccion)}`);
+                  if (availableLabel) secondaryLines.push(availableLabel);
+                } else {
+                  const priceNumber = Number(c?.price);
+                  const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
+                  const availableNumber = Number(c?.available);
+                  const availableValue = Number.isFinite(availableNumber) ? availableNumber.toFixed(2) : '0.00';
+                  const availabilityLabel = selectorMode === 'tela' ? 'Disponible (m)' : 'Disponible';
+                  if (c?.category) {
+                    secondaryLines.push(`Categoría: ${c.category}`);
+                  }
+                  secondaryLines.push(`${availabilityLabel}: ${availableValue}`);
+                  secondaryLines.push(`Precio: $ ${priceFormatted}`);
+                }
                 return (
                   <div
                     key={c.id}
@@ -2001,8 +2865,9 @@ const ProductsPage = () => {
                   >
                     <div>
                       <div style={{ fontWeight: 600 }}>{cap(c.name)}</div>
-                      <div style={{ fontSize: 12, color: '#777' }}>{c.category} · ${priceFormatted}</div>
-                      <div style={{ fontSize: 12, color: '#777' }}>{availabilityLabel}: {availableValue}</div>
+                      {secondaryLines.map((line, lineIdx) => (
+                        <div key={lineIdx} style={{ fontSize: 12, color: '#777' }}>{line}</div>
+                      ))}
                     </div>
                     <button
                       onClick={() => applySelectorOption(c)}
