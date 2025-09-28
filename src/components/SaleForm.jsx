@@ -14,6 +14,7 @@ const SaleForm = ({ onSaleAdded }) => {
   const [unitPrice, setUnitPrice] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('Efectivo');
   const [gananciaUnit, setGananciaUnit] = useState('');
+  const [realSaleValue, setRealSaleValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -43,6 +44,7 @@ const SaleForm = ({ onSaleAdded }) => {
   const qtyNum = Number(quantity) || 0;
   const priceNum = Number(unitPrice) || 0;
   const gananciaNum = Number(gananciaUnit) || 0;
+  const realSaleValueNum = Number(realSaleValue) || 0;
   const total = Math.max(qtyNum * (priceNum + gananciaNum), 0);
 
   const categories = useMemo(() => {
@@ -99,7 +101,8 @@ const SaleForm = ({ onSaleAdded }) => {
       unitPrice: priceNum,
       gananciaUnit: gananciaNum,
       total,
-      paymentMethod
+      paymentMethod,
+      realSaleValue: realSaleValue === '' ? null : realSaleValueNum
     };
     try {
       const response = await fetch('/api/sales', {
@@ -129,6 +132,8 @@ const SaleForm = ({ onSaleAdded }) => {
       setDate(new Date().toISOString().split('T')[0]);
       setCustomerName('');
       setUnitPrice('');
+      setGananciaUnit('');
+      setRealSaleValue('');
       setPaymentMethod('Efectivo');
       if (onSaleAdded) onSaleAdded();
     } catch (error) {
@@ -216,7 +221,7 @@ const SaleForm = ({ onSaleAdded }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Precio</label>
+          <label className="form-label">Costo materiales</label>
           <input
             className="form-input"
             type="number"
@@ -229,7 +234,7 @@ const SaleForm = ({ onSaleAdded }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Confección (ganancia)</label>
+          <label className="form-label">Ganancia estimada (confección)</label>
           <input
             className="form-input"
             type="number"
@@ -237,6 +242,18 @@ const SaleForm = ({ onSaleAdded }) => {
             step="0.01"
             value={gananciaUnit}
             onChange={(e) => setGananciaUnit(e.target.value)}
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Valor venta real</label>
+          <input
+            className="form-input"
+            type="number"
+            min="0"
+            step="0.01"
+            value={realSaleValue}
+            onChange={(e) => setRealSaleValue(e.target.value)}
           />
         </div>
 
@@ -272,6 +289,7 @@ const SaleForm = ({ onSaleAdded }) => {
             <option>Efectivo</option>
             <option>Transferencia</option>
             <option>Tarjeta</option>
+            <option>Tarjeta de Regalo</option>
             <option>Otro</option>
           </select>
         </div>
@@ -292,9 +310,13 @@ const SaleForm = ({ onSaleAdded }) => {
               <p><strong>Producto:</strong> {selectedProduct?.name || productId}</p>
               <p><strong>Categoría:</strong> {category}</p>
               <p><strong>Cantidad:</strong> {qtyNum}</p>
-              <p><strong>Precio (Unidad):</strong> ${priceNum.toFixed(2)}</p>
-              <p><strong>Ganancia (unidad):</strong> ${gananciaNum.toFixed(2)}</p>
-              <p><strong>Total:</strong> {(qtyNum * (priceNum + gananciaNum)).toFixed(2)}</p>
+              <p><strong>Costo materiales:</strong> ${priceNum.toFixed(2)}</p>
+              <p><strong>Ganancia estimada (confección):</strong> ${gananciaNum.toFixed(2)}</p>
+              <p><strong>Costo total producto:</strong> {total.toFixed(2)}</p>
+              <p><strong>Valor venta real:</strong> {realSaleValue === '' ? '—' : `$${realSaleValueNum.toFixed(2)}`}</p>
+              <p><strong>Ganancia real:</strong> {realSaleValue === ''
+                ? '—'
+                : `$${(realSaleValueNum - total).toFixed(2)}`}</p>
               <p><strong>Cliente:</strong> {customerName || '—'}</p>
               <p><strong>Fecha:</strong> {date}</p>
               <p><strong>Medio de pago:</strong> {paymentMethod}</p>
