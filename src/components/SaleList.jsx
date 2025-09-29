@@ -213,7 +213,7 @@ const SaleList = () => {
     const realSaleValRaw = editData.realSaleValue === '' ? null : Number(editData.realSaleValue);
     const realSaleValid = realSaleValRaw !== null && Number.isFinite(realSaleValRaw);
     const realSaleVal = realSaleValid ? realSaleValRaw : null;
-    const realProfit = realSaleVal !== null ? realSaleVal - total : null;
+    const realProfit = realSaleVal !== null ? realSaleVal - cost : null;
     return { qty, cost, gain, total, realSaleVal, realProfit };
   }, [editData]);
 
@@ -485,7 +485,7 @@ const SaleList = () => {
               const hasRealSale = realSaleRaw !== null && realSaleRaw !== undefined && realSaleRaw !== '';
               const realSaleAmount = hasRealSale ? Number(realSaleRaw) : NaN;
               const validRealSale = hasRealSale && !Number.isNaN(realSaleAmount);
-              const realProfit = validRealSale ? realSaleAmount - costTotal : null;
+              const realProfit = validRealSale ? realSaleAmount - costMaterials : null;
 
               return (
                 <tr

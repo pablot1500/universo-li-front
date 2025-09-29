@@ -15,8 +15,19 @@ const StatsPage = () => {
   })();
   const [startDate, setStartDate] = useState(firstOfMonthStr);
   const [endDate, setEndDate] = useState(todayStr);
-  const [metric, setMetric] = useState('revenue'); // 'revenue' | 'units'
+  const [metric, setMetric] = useState('profit'); // 'profit' | 'cost' | 'units'
   const [lowStockThreshold, setLowStockThreshold] = useState(5);
+  const metricLabels = {
+    profit: 'Ganancia real',
+    cost: 'Costo materiales',
+    units: 'Unidades',
+  };
+  const getMetricValue = (record) => {
+    if (!record) return 0;
+    if (metric === 'units') return Number(record.units) || 0;
+    if (metric === 'profit') return Number(record.profit) || 0;
+    return Number(record.cost) || 0;
+  };
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -48,27 +59,24 @@ const StatsPage = () => {
     return [sd, ed];
   };
 
-  const saleAmount = (s) => {
-    const qty = Number(s.quantity) || 0;
-    const unit = Number(s.unitPrice) || 0;
-    const gan = Number(s.gananciaUnit) || 0;
-    const computed = qty * (unit + gan);
-    const fallback = Number(s.total) || 0;
-    return computed > 0 ? computed : fallback;
-  };
-
-  const computeProductCost = (p) => {
-    if (!p) return null;
-    const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
-    const otros = (p.componentes && Array.isArray(p.componentes.otros)) ? p.componentes.otros : [];
-    const telasTotal = telas.reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
-    const otrosTotal = otros
-      .filter(o => !o?.tagConfeccion)
-      .reduce((acc, o) => acc + ((Number(o?.unidades) || 0) * (Number(o?.precioUnitario) || 0)), 0);
-    const total = telasTotal + otrosTotal;
-    if (total > 0) return total;
-    const fallback = Number(p.price) || 0;
-    return fallback > 0 ? fallback : null;
+  const getSaleMetrics = (sale) => {
+    const qty = Number(sale?.quantity) || 0;
+    const costUnit = Number(sale?.unitPrice) || 0;
+    const estimatedGain = Number(sale?.gananciaUnit) || 0;
+    const costMaterials = Math.max(qty * costUnit, 0);
+    const estimatedTotal = Math.max(qty * (costUnit + estimatedGain), 0);
+    const fallbackTotal = Number(sale?.total);
+    const rawReal = sale?.realSaleValue;
+    const parsedReal = rawReal === null || rawReal === undefined || rawReal === ''
+      ? null
+      : Number(rawReal);
+    const realSaleValue = Number.isFinite(parsedReal)
+      ? parsedReal
+      : (estimatedTotal > 0
+        ? estimatedTotal
+        : (Number.isFinite(fallbackTotal) && fallbackTotal > 0 ? fallbackTotal : 0));
+    const realProfit = realSaleValue - costMaterials;
+    return { costMaterials, realSaleValue, realProfit };
   };
 
   const joinedSales = useMemo(() => {
@@ -126,31 +134,32 @@ const StatsPage = () => {
     });
   }, [joinedSales, sd, ed]);
 
-  const kpis = useMemo(() => {
-    const revenue = filteredSales.reduce((acc, s) => acc + saleAmount(s), 0);
-    const count = filteredSales.length;
-    const avg = count > 0 ? revenue / count : 0;
-    // margen estimado (parcial): usa costo unitario del producto cuando está disponible
-    let marginSum = 0;
-    let marginCount = 0;
-    for (const s of filteredSales) {
-      const qty = Number(s.quantity) || 0;
-      if (!qty) continue;
-      const costUnit = computeProductCost(s.product);
-      if (costUnit != null) {
-        const unit = saleAmount(s) / qty;
-        marginSum += (unit - costUnit) * qty;
-        marginCount++;
-      }
-    }
-    return {
-      revenue,
-      count,
-      avg,
-      marginEstimated: marginSum, // puede ser parcial
-      marginCovered: marginCount,
-    };
+  const filteredSalesWithMetrics = useMemo(() => {
+    return filteredSales.map(s => ({
+      ...s,
+      metrics: getSaleMetrics(s)
+    }));
   }, [filteredSales]);
+
+  const kpis = useMemo(() => {
+    const count = filteredSalesWithMetrics.length;
+    let profitSum = 0;
+    let costSum = 0;
+    for (const sale of filteredSalesWithMetrics) {
+      const { realProfit, costMaterials } = sale.metrics;
+      profitSum += realProfit;
+      costSum += costMaterials;
+    }
+    const avgProfit = count ? profitSum / count : 0;
+    const avgCost = count ? costSum / count : 0;
+    return {
+      count,
+      totalProfit: profitSum,
+      totalCost: costSum,
+      avgProfit,
+      avgCost,
+    };
+  }, [filteredSalesWithMetrics]);
 
   const paymentBreakdown = useMemo(() => {
     const counts = new Map();
@@ -167,43 +176,56 @@ const StatsPage = () => {
 
   const byCategory = useMemo(() => {
     const acc = new Map();
-    for (const s of filteredSales) {
-      const cat = s.product?.category || 'Sin categoría';
-      const cur = acc.get(cat) || { revenue: 0, units: 0 };
-      cur.revenue += saleAmount(s);
-      cur.units += (Number(s.quantity) || 0);
+    for (const sale of filteredSalesWithMetrics) {
+      const cat = sale.product?.category || 'Sin categoría';
+      const cur = acc.get(cat) || { profit: 0, cost: 0, units: 0 };
+      cur.profit += sale.metrics.realProfit;
+      cur.cost += sale.metrics.costMaterials;
+      cur.units += (Number(sale.quantity) || 0);
       acc.set(cat, cur);
     }
     const rows = Array.from(acc.entries()).map(([category, vals]) => ({ category, ...vals }));
-    rows.sort((a, b) => (metric === 'revenue' ? b.revenue - a.revenue : b.units - a.units));
+    rows.sort((a, b) => {
+      if (metric === 'units') return b.units - a.units;
+      const field = metric === 'profit' ? 'profit' : 'cost';
+      return b[field] - a[field];
+    });
     return rows;
-  }, [filteredSales, metric]);
+  }, [filteredSalesWithMetrics, metric]);
 
   const byProduct = useMemo(() => {
     const acc = new Map();
-    for (const s of filteredSales) {
-      const name = s.product?.name || `#${s.productId}`;
-      const cur = acc.get(name) || { revenue: 0, units: 0 };
-      cur.revenue += saleAmount(s);
-      cur.units += (Number(s.quantity) || 0);
+    for (const sale of filteredSalesWithMetrics) {
+      const name = sale.product?.name || `#${sale.productId}`;
+      const cur = acc.get(name) || { profit: 0, cost: 0, units: 0 };
+      cur.profit += sale.metrics.realProfit;
+      cur.cost += sale.metrics.costMaterials;
+      cur.units += (Number(sale.quantity) || 0);
       acc.set(name, cur);
     }
     const rows = Array.from(acc.entries()).map(([product, vals]) => ({ product, ...vals }));
-    rows.sort((a, b) => (metric === 'revenue' ? b.revenue - a.revenue : b.units - a.units));
+    rows.sort((a, b) => {
+      if (metric === 'units') return b.units - a.units;
+      const field = metric === 'profit' ? 'profit' : 'cost';
+      return b[field] - a[field];
+    });
     return rows.slice(0, 5);
-  }, [filteredSales, metric]);
+  }, [filteredSalesWithMetrics, metric]);
 
   const dailySeries = useMemo(() => {
-    const fmt = (d) => d.toISOString().split('T')[0];
     const acc = new Map();
-    for (const s of filteredSales) {
-      const key = s.date || '—';
-      acc.set(key, (acc.get(key) || 0) + saleAmount(s));
+    for (const sale of filteredSalesWithMetrics) {
+      const key = sale.date || '—';
+      const current = acc.get(key) || { profit: 0, cost: 0, units: 0 };
+      current.profit += sale.metrics.realProfit;
+      current.cost += sale.metrics.costMaterials;
+      current.units += (Number(sale.quantity) || 0);
+      acc.set(key, current);
     }
-    const rows = Array.from(acc.entries()).map(([date, revenue]) => ({ date, revenue }));
+    const rows = Array.from(acc.entries()).map(([date, data]) => ({ date, ...data }));
     rows.sort((a, b) => a.date.localeCompare(b.date));
     return rows;
-  }, [filteredSales]);
+  }, [filteredSalesWithMetrics]);
 
   const lowStock = useMemo(() => {
     const thr = Number(lowStockThreshold) || 0;
@@ -217,20 +239,6 @@ const StatsPage = () => {
   // Estilos simples
   const cardStyle = { padding: 12, border: '1px solid #eee', borderRadius: 8, background: '#fff' };
   const sectionStyle = { marginTop: 16 };
-  const barRow = (label, value, max, suffix = '') => {
-    const pct = max > 0 ? Math.min(100, (value * 100) / max) : 0;
-    return (
-      <div key={label} style={{ marginBottom: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-          <span>{label}</span>
-          <span>{suffix === 'u' ? `${value} u` : `$ ${value.toFixed(2)}`}</span>
-        </div>
-        <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: 'rgba(248,168,201,0.7)', borderRadius: 6 }} />
-        </div>
-      </div>
-    );
-  };
 
   if (loading) return <div>Cargando estadísticas…</div>;
   if (error) return <div>Error: {error}</div>;
@@ -245,9 +253,9 @@ const StatsPage = () => {
   const visibleDailySeries = dailySeries.length > maxDailyRows
     ? dailySeries.slice(dailySeries.length - maxDailyRows)
     : dailySeries;
-  const maxDaily = visibleDailySeries.reduce((m, r) => Math.max(m, r.revenue), 0);
-  const maxCat = visibleByCategory.reduce((m, r) => Math.max(m, metric === 'revenue' ? r.revenue : r.units), 0);
-  const maxProd = byProduct.reduce((m, r) => Math.max(m, metric === 'revenue' ? r.revenue : r.units), 0);
+  const maxDaily = visibleDailySeries.reduce((m, r) => Math.max(m, getMetricValue(r)), 0);
+  const maxCat = visibleByCategory.reduce((m, r) => Math.max(m, getMetricValue(r)), 0);
+  const maxProd = byProduct.reduce((m, r) => Math.max(m, getMetricValue(r)), 0);
 
   return (
     <div>
@@ -266,7 +274,8 @@ const StatsPage = () => {
         <div>
           <label style={{ fontSize: 12, color: '#555' }}>Métrica</label><br />
           <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-            <option value="revenue">Ingresos</option>
+            <option value="profit">Ganancia real</option>
+            <option value="cost">Costo materiales</option>
             <option value="units">Unidades</option>
           </select>
         </div>
@@ -289,21 +298,24 @@ const StatsPage = () => {
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 12, color: '#777' }}>Ingresos</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.revenue.toFixed(2)}</div>
+          <div style={{ fontSize: 12, color: '#777' }}>Ganancia real total</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.totalProfit.toFixed(2)}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Costo materiales total</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.totalCost.toFixed(2)}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Ganancia real promedio</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.avgProfit.toFixed(2)}</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 12, color: '#777' }}>Costo materiales promedio</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.avgCost.toFixed(2)}</div>
         </div>
         <div style={cardStyle}>
           <div style={{ fontSize: 12, color: '#777' }}>Ventas</div>
           <div style={{ fontSize: 20, fontWeight: 700 }}>{kpis.count}</div>
-        </div>
-        <div style={cardStyle}>
-          <div style={{ fontSize: 12, color: '#777' }}>Ticket promedio</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.avg.toFixed(2)}</div>
-        </div>
-        <div style={cardStyle}>
-          <div style={{ fontSize: 12, color: '#777' }}>Margen estimado</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>$ {kpis.marginEstimated.toFixed(2)}</div>
-          <div style={{ fontSize: 11, color: '#999' }}>Basado en {kpis.marginCovered} ventas con costo conocido</div>
         </div>
       </div>
 
@@ -353,23 +365,23 @@ const StatsPage = () => {
 
           {/* Top 5 productos - barras verticales con etiquetas */}
           <div style={halfCardStyle}>
-            <div style={{ marginBottom: 32, fontWeight: 600 }}>Top 5 productos ({metric === 'revenue' ? 'Ingresos' : 'Unidades'})</div>
+            <div style={{ marginBottom: 32, fontWeight: 600 }}>Top 5 productos ({metricLabels[metric]})</div>
             {byProduct.length === 0 ? (
               <div style={{ color: '#777' }}>Sin datos</div>
             ) : (
               <div>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: (isMobile ? 6 : 12), height: graphHeight, padding: (isMobile ? '20px 12px 10px' : '28px 20px 12px'), justifyContent: 'center' }}>
                   {byProduct.map((r, idx) => {
-                    const val = metric === 'revenue' ? r.revenue : r.units;
+                    const val = getMetricValue(r);
                     const h = maxProd ? Math.max(2, (val * graphHeight) / maxProd) : 2;
                     const color = palette[idx % palette.length];
                     return (
                       <div key={r.product} style={{ width: (isMobile ? 48 : 68), display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                         <div style={{ position: 'relative', width: '100%', height: graphHeight }}>
-                          <div title={`${r.product} • ${metric === 'revenue' ? '$ ' + val.toFixed(2) : val + ' u'}`}
+                          <div title={`${r.product} • ${metric === 'units' ? val + ' u' : '$ ' + val.toFixed(2)}`}
                                style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 0, width: (isMobile ? 16 : 24), height: h, background: color, borderRadius: 3 }} />
                           <div style={{ position: 'absolute', bottom: h + 2, left: '50%', transform: 'translateX(-50%)', fontSize: (isMobile ? 9 : 10), color: '#555', whiteSpace: 'nowrap' }}>
-                            {metric === 'revenue' ? Math.round(val).toLocaleString('es-AR') : val}
+                            {metric === 'units' ? val : Math.round(val).toLocaleString('es-AR')}
                           </div>
                         </div>
                         <div
@@ -400,20 +412,20 @@ const StatsPage = () => {
 
       {/* Por categoría - barras con colores */}
       <div style={{ ...sectionStyle, ...cardStyle }}>
-        <div style={{ marginBottom: 8, fontWeight: 600 }}>Por categoría ({metric === 'revenue' ? 'Ingresos' : 'Unidades'})</div>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>Por categoría ({metricLabels[metric]})</div>
         {byCategory.length === 0 ? (
           <div style={{ color: '#777' }}>Sin datos</div>
         ) : (
           <div>
             {visibleByCategory.map((r, idx) => {
-              const val = metric === 'revenue' ? r.revenue : r.units;
+              const val = getMetricValue(r);
               const pct = maxCat > 0 ? Math.min(100, (val * 100) / maxCat) : 0;
               const color = palette[idx % palette.length];
               return (
                 <div key={r.category} style={{ marginBottom: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
                     <span>{r.category}</span>
-                    <span>{metric === 'revenue' ? `$ ${val.toFixed(2)}` : `${val} u`}</span>
+                    <span>{metric === 'units' ? `${val} u` : `$ ${val.toFixed(2)}`}</span>
                   </div>
                   <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
                     <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 6 }} />
@@ -428,22 +440,22 @@ const StatsPage = () => {
         )}
       </div>
 
-      {/* Ingresos por día - barras horizontales (similar a Por categoría) */}
+      {/* Serie diaria - barras horizontales (similar a Por categoría) */}
       <div style={{ ...sectionStyle, ...cardStyle }}>
-        <div style={{ marginBottom: 8, fontWeight: 600 }}>Ingresos por día</div>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>{`${metricLabels[metric]} por día`}</div>
         {dailySeries.length === 0 ? (
           <div style={{ color: '#777' }}>Sin datos</div>
         ) : (
           <div>
             {visibleDailySeries.map((r, idx) => {
-              const val = r.revenue;
+              const val = getMetricValue(r);
               const pct = maxDaily > 0 ? Math.min(100, (val * 100) / maxDaily) : 0;
               const color = palette[idx % palette.length];
               return (
                 <div key={r.date} style={{ marginBottom: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
                     <span>{r.date}</span>
-                    <span>$ {val.toFixed(2)}</span>
+                    <span>{metric === 'units' ? `${val} u` : `$ ${val.toFixed(2)}`}</span>
                   </div>
                   <div style={{ height: 10, background: '#f2f2f2', borderRadius: 6 }}>
                     <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 6 }} />
@@ -485,12 +497,13 @@ const StatsPage = () => {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Fecha</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Producto</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Cant.</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Importe</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Costo materiales</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #eee', padding: 8 }}>Ganancia real</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #eee', padding: 8 }}>Pago</th>
               </tr>
             </thead>
             <tbody>
-              {filteredSales
+              {filteredSalesWithMetrics
                 .slice()
                 .sort((a, b) => String(b.date).localeCompare(String(a.date)))
                 .slice(0, 10)
@@ -499,7 +512,8 @@ const StatsPage = () => {
                     <td style={{ padding: 8 }}>{s.date}</td>
                     <td style={{ padding: 8 }}>{s.product?.name || `#${s.productId}`}</td>
                     <td style={{ padding: 8, textAlign: 'right' }}>{s.quantity}</td>
-                    <td style={{ padding: 8, textAlign: 'right' }}>$ {saleAmount(s).toFixed(2)}</td>
+                    <td style={{ padding: 8, textAlign: 'right' }}>$ {s.metrics.costMaterials.toFixed(2)}</td>
+                    <td style={{ padding: 8, textAlign: 'right' }}>$ {s.metrics.realProfit.toFixed(2)}</td>
                     <td style={{ padding: 8 }}>{s.paymentMethod || '—'}</td>
                   </tr>
                 ))}
