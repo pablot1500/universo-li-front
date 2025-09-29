@@ -111,16 +111,6 @@ const SaleList = () => {
 
   const displayed = useMemo(() => sorted.slice(0, pageSize), [sorted, pageSize]);
 
-  const totalSum = useMemo(() => {
-    return displayed.reduce((acc, s) => {
-      const qty = Number(s.quantity) || 0;
-      const unit = Number(s.unitPrice) || 0;
-      const gan = Number(s.gananciaUnit) || 0;
-      const computed = qty * (unit + gan);
-      return acc + (computed > 0 ? computed : (Number(s.total) || 0));
-    }, 0);
-  }, [displayed]);
-
   const editProductExists = useMemo(() => {
     if (!editData) return false;
     return products.some(p => String(p.id) === String(editData.productId));
@@ -529,13 +519,6 @@ const SaleList = () => {
               );
             })}
           </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={5}></td>
-              <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 'bold' }}>$ {totalSum.toFixed(2)}</td>
-              <td colSpan={5}></td>
-            </tr>
-          </tfoot>
         </table>
       </div>
 
