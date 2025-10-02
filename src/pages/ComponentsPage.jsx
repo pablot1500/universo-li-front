@@ -105,6 +105,9 @@ const ComponentsPage = () => {
     zIndex: 1001,
     width: isMobile ? '86%' : '90%',
     maxWidth: isMobile ? '360px' : '760px',
+    maxHeight: '90vh',
+    overflowY: 'auto',
+    boxSizing: 'border-box'
   };
 
   const closeButtonStyle = {

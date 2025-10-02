@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { computeSaleFinancials } from '../utils/salePayments';
 
 const StatsPage = () => {
   const [sales, setSales] = useState([]);
@@ -59,22 +60,10 @@ const StatsPage = () => {
     return [sd, ed];
   };
 
-  const getSaleMetrics = (sale) => {
-    const qty = Number(sale?.quantity) || 0;
-    const costUnit = Number(sale?.unitPrice) || 0;
-    const estimatedGain = Number(sale?.gananciaUnit) || 0;
-    const costMaterials = Math.max(qty * costUnit, 0);
-    const estimatedTotal = Math.max(qty * (costUnit + estimatedGain), 0);
-    const fallbackTotal = Number(sale?.total);
-    const rawReal = sale?.realSaleValue;
-    const parsedReal = rawReal === null || rawReal === undefined || rawReal === ''
-      ? null
-      : Number(rawReal);
-    const realSaleValue = Number.isFinite(parsedReal)
-      ? parsedReal
-      : (estimatedTotal > 0
-        ? estimatedTotal
-        : (Number.isFinite(fallbackTotal) && fallbackTotal > 0 ? fallbackTotal : 0));
+  const getSaleMetrics = (sale, financials) => {
+    const fin = financials || computeSaleFinancials(sale);
+    const costMaterials = fin.costMaterials;
+    const realSaleValue = fin.realSaleValue !== null ? fin.realSaleValue : fin.effectiveSaleValue;
     const realProfit = realSaleValue - costMaterials;
     return { costMaterials, realSaleValue, realProfit };
   };
@@ -86,6 +75,13 @@ const StatsPage = () => {
       product: map.get(String(s.productId)) || null
     }));
   }, [sales, products]);
+
+  const enrichedSales = useMemo(() => {
+    return joinedSales.map(sale => ({
+      ...sale,
+      financials: computeSaleFinancials(sale)
+    }));
+  }, [joinedSales]);
 
   const [sd, ed] = clampRange(startDate, endDate);
 
@@ -124,7 +120,7 @@ const StatsPage = () => {
   };
 
   const filteredSales = useMemo(() => {
-    return joinedSales.filter(s => {
+    const byDate = enrichedSales.filter(s => {
       if (!sd && !ed) return true;
       const d = s.date ? new Date(s.date) : null;
       if (!d) return false;
@@ -132,12 +128,13 @@ const StatsPage = () => {
       const beforeEnd = ed ? d <= ed : true;
       return afterStart && beforeEnd;
     });
-  }, [joinedSales, sd, ed]);
+    return byDate.filter(s => s.financials.paymentStatus === 'Pagado');
+  }, [enrichedSales, sd, ed]);
 
   const filteredSalesWithMetrics = useMemo(() => {
     return filteredSales.map(s => ({
       ...s,
-      metrics: getSaleMetrics(s)
+      metrics: getSaleMetrics(s, s.financials)
     }));
   }, [filteredSales]);
 

@@ -1,6 +1,7 @@
 
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 
 const SaleForm = ({ onSaleAdded }) => {
   const [products, setProducts] = useState([]);
@@ -15,6 +16,9 @@ const SaleForm = ({ onSaleAdded }) => {
   const [paymentMethod, setPaymentMethod] = useState('Efectivo');
   const [gananciaUnit, setGananciaUnit] = useState('');
   const [realSaleValue, setRealSaleValue] = useState('');
+  const [paymentReceived, setPaymentReceived] = useState('0');
+  const [paymentPending, setPaymentPending] = useState('0');
+  const [paymentNotes, setPaymentNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -46,6 +50,25 @@ const SaleForm = ({ onSaleAdded }) => {
   const gananciaNum = Number(gananciaUnit) || 0;
   const realSaleValueNum = Number(realSaleValue) || 0;
   const total = Math.max(qtyNum * (priceNum + gananciaNum), 0);
+  const parseMoneyInput = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  const roundMoney = (value) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    return Math.round(num * 100) / 100;
+  };
+  const toInputString = (value) => {
+    const rounded = roundMoney(value);
+    if (!Number.isFinite(rounded)) return '0';
+    const str = String(rounded);
+    return str;
+  };
+  const approxEqual = (a, b) => Math.abs(a - b) < 0.01;
+
+  const saleTotalValue = realSaleValue === '' ? total : realSaleValueNum;
 
   const categories = useMemo(() => {
     const set = new Set();
@@ -78,6 +101,63 @@ const SaleForm = ({ onSaleAdded }) => {
     return 0;
   };
 
+  useEffect(() => {
+    const totalValue = saleTotalValue;
+    if (!Number.isFinite(totalValue)) return;
+    setPaymentPending(prev => {
+      const prevNum = parseMoneyInput(prev);
+      const receivedNum = parseMoneyInput(paymentReceived);
+      const nextPending = Math.max(roundMoney(totalValue - receivedNum), 0);
+      if (approxEqual(prevNum, nextPending)) return prev;
+      return toInputString(nextPending);
+    });
+  }, [saleTotalValue, paymentReceived]);
+
+  const handlePaymentReceivedChange = (e) => {
+    const value = e.target.value;
+    setPaymentReceived(value);
+    const totalValue = saleTotalValue;
+    if (!Number.isFinite(totalValue)) return;
+    const receivedNum = parseMoneyInput(value);
+    const nextPending = Math.max(roundMoney(totalValue - receivedNum), 0);
+    setPaymentPending(toInputString(nextPending));
+  };
+
+  const handlePaymentPendingChange = (e) => {
+    const value = e.target.value;
+    setPaymentPending(value);
+    const totalValue = saleTotalValue;
+    if (!Number.isFinite(totalValue)) return;
+    const pendingNum = parseMoneyInput(value);
+    const nextReceived = Math.max(roundMoney(totalValue - pendingNum), 0);
+    setPaymentReceived(toInputString(nextReceived));
+  };
+
+  const saleTotalRounded = roundMoney(saleTotalValue);
+  const normalizedPaymentReceived = (() => {
+    const raw = roundMoney(parseMoneyInput(paymentReceived));
+    if (saleTotalRounded > 0) {
+      return Math.min(raw, saleTotalRounded);
+    }
+    return raw;
+  })();
+  const normalizedPaymentPending = (() => {
+    if (saleTotalRounded > 0) {
+      return Math.max(roundMoney(saleTotalRounded - normalizedPaymentReceived), 0);
+    }
+    return roundMoney(parseMoneyInput(paymentPending));
+  })();
+  const paymentStatus = (() => {
+    if (saleTotalRounded <= 0) {
+      if (normalizedPaymentReceived > 0) return 'Pagado';
+      if (normalizedPaymentPending > 0) return 'Pendiente de Pago';
+      return 'Pagado';
+    }
+    if (approxEqual(normalizedPaymentReceived, saleTotalRounded)) return 'Pagado';
+    if (approxEqual(normalizedPaymentReceived, 0)) return 'Pendiente de Pago';
+    return 'Pago parcial';
+  })();
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!category || !productId || qtyNum <= 0 || priceNum <= 0) return;
@@ -102,7 +182,10 @@ const SaleForm = ({ onSaleAdded }) => {
       gananciaUnit: gananciaNum,
       total,
       paymentMethod,
-      realSaleValue: realSaleValue === '' ? null : realSaleValueNum
+      realSaleValue: realSaleValue === '' ? null : realSaleValueNum,
+      paymentReceived: normalizedPaymentReceived,
+      paymentPending: normalizedPaymentPending,
+      paymentNotes: paymentNotes.trim() ? paymentNotes.trim() : null
     };
     try {
       const response = await fetch('/api/sales', {
@@ -135,6 +218,9 @@ const SaleForm = ({ onSaleAdded }) => {
       setGananciaUnit('');
       setRealSaleValue('');
       setPaymentMethod('Efectivo');
+      setPaymentReceived('0');
+      setPaymentPending('0');
+      setPaymentNotes('');
       if (onSaleAdded) onSaleAdded();
     } catch (error) {
       console.error('Error:', error);
@@ -156,10 +242,10 @@ const SaleForm = ({ onSaleAdded }) => {
   }, [productId]);
 
   const overlayStyle = {
-    position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1500
+    position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1700
   };
   const modalStyle = {
-    position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: '#fff', padding: 20, borderRadius: 8, zIndex: 1501, width: '90%', maxWidth: 520
+    position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: '#fff', padding: 20, borderRadius: 8, zIndex: 1701, width: '90%', maxWidth: 520
   };
   const [confirmClosing, setConfirmClosing] = useState(false);
   const overlayFade = (closing) => ({ ...overlayStyle, opacity: closing ? 0 : 1, transition: 'opacity 180ms ease' });
@@ -258,6 +344,41 @@ const SaleForm = ({ onSaleAdded }) => {
         </div>
 
         <div className="form-group">
+          <label className="form-label">Pago recibido</label>
+          <input
+            className="form-input"
+            type="number"
+            min="0"
+            step="0.01"
+            value={paymentReceived}
+            onChange={handlePaymentReceivedChange}
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Pago pendiente</label>
+          <input
+            className="form-input"
+            type="number"
+            min="0"
+            step="0.01"
+            value={paymentPending}
+            onChange={handlePaymentPendingChange}
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Observaciones forma de pago</label>
+          <textarea
+            className="form-input"
+            rows={2}
+            value={paymentNotes}
+            onChange={(e) => setPaymentNotes(e.target.value)}
+            placeholder="Notas sobre cobro, plazos, etc."
+          />
+        </div>
+
+        <div className="form-group">
           <label className="form-label">Cliente</label>
           <input
             className="form-input"
@@ -301,7 +422,7 @@ const SaleForm = ({ onSaleAdded }) => {
         </div>
       </form>
 
-      {showConfirm && (
+      {showConfirm && typeof document !== 'undefined' && createPortal(
         <>
           <div style={overlayFade(confirmClosing)} onClick={closeConfirm} />
           <div style={modalAnim(confirmClosing)}>
@@ -314,19 +435,24 @@ const SaleForm = ({ onSaleAdded }) => {
               <p><strong>Ganancia estimada (confección):</strong> ${gananciaNum.toFixed(2)}</p>
               <p><strong>Costo total producto:</strong> {total.toFixed(2)}</p>
               <p><strong>Valor venta real:</strong> {realSaleValue === '' ? '—' : `$${realSaleValueNum.toFixed(2)}`}</p>
+              <p><strong>Pago recibido:</strong> ${normalizedPaymentReceived.toFixed(2)}</p>
+              <p><strong>Pago pendiente:</strong> ${normalizedPaymentPending.toFixed(2)}</p>
+              <p><strong>Estado del pago:</strong> {paymentStatus}</p>
               <p><strong>Ganancia real:</strong> {realSaleValue === ''
                 ? '—'
                 : `$${(realSaleValueNum - total).toFixed(2)}`}</p>
               <p><strong>Cliente:</strong> {customerName || '—'}</p>
               <p><strong>Fecha:</strong> {date}</p>
               <p><strong>Medio de pago:</strong> {paymentMethod}</p>
+              <p><strong>Observaciones forma de pago:</strong> {paymentNotes.trim() ? paymentNotes.trim() : '—'}</p>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button onClick={closeConfirm}>Cancelar</button>
               <button onClick={confirmSubmit} disabled={submitting}>{submitting ? 'Guardando...' : 'Confirmar'}</button>
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );

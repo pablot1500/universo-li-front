@@ -28,6 +28,9 @@ const SalesPage = () => {
     zIndex: 1001,
     width: '80%',
     maxWidth: '500px',
+    maxHeight: '90vh',
+    overflowY: 'auto',
+    boxSizing: 'border-box'
   };
   const closeButtonStyle = {
     position: 'absolute',

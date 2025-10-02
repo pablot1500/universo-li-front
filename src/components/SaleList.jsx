@@ -1,6 +1,13 @@
 
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { computeSaleFinancials, normalizePayments, determinePaymentStatus, roundMoney } from '../utils/salePayments';
+
+const paymentStatusColor = (status) => {
+  if (status === 'Pendiente de Pago') return '#b91c1c';
+  if (status === 'Pago parcial') return '#f87171';
+  return '#111827';
+};
 
 const SaleList = () => {
   const [sales, setSales] = useState([]);
@@ -44,11 +51,18 @@ const SaleList = () => {
     }));
   }, [sales, products]);
 
+  const enrichedSales = useMemo(() => {
+    return joinedSales.map(sale => ({
+      ...sale,
+      financials: computeSaleFinancials(sale)
+    }));
+  }, [joinedSales]);
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     const start = startDate ? new Date(startDate) : null;
     const end = endDate ? new Date(endDate) : null;
-    return joinedSales.filter(s => {
+    return enrichedSales.filter(s => {
       const name = s.product?.name?.toLowerCase() || '';
       const cust = s.customerName?.toLowerCase() || '';
       const matchesSearch = term ? (name.includes(term) || cust.includes(term)) : true;
@@ -58,7 +72,7 @@ const SaleList = () => {
       const matchesEnd = end ? (d && d <= end) : true;
       return matchesSearch && matchesMethod && matchesStart && matchesEnd;
     });
-  }, [joinedSales, search, method, startDate, endDate]);
+  }, [enrichedSales, search, method, startDate, endDate]);
 
   const [sortField, setSortField] = useState('date');
   const [sortDirection, setSortDirection] = useState('desc');
@@ -68,6 +82,41 @@ const SaleList = () => {
   const [initialEditData, setInitialEditData] = useState(null);
   const [editDirty, setEditDirty] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+
+  const syncEditData = (updater) => {
+    setEditData(prev => {
+      const base = prev ? { ...prev } : {};
+      const next = updater(base);
+      if (!next) return base;
+      if (initialEditData) {
+        const dirty = Object.keys(next).some(key => (next[key] ?? '') !== (initialEditData[key] ?? ''));
+        setEditDirty(dirty);
+      } else {
+        setEditDirty(true);
+      }
+      return next;
+    });
+  };
+
+  const getEditEffectiveTotal = (data) => {
+    const qty = Number(data.quantity) || 0;
+    const unit = Number(data.unitPrice) || 0;
+    const gain = Number(data.gananciaUnit) || 0;
+    const computed = Math.max(qty * (unit + gain), 0);
+    if (data.realSaleValue !== '' && data.realSaleValue !== null && data.realSaleValue !== undefined) {
+      const real = Number(data.realSaleValue);
+      if (Number.isFinite(real) && real >= 0) return real;
+    }
+    if (computed > 0) return computed;
+    const fallbackCandidate = editingSale?.financials?.effectiveSaleValue ?? Number(editingSale?.total);
+    const fallback = Number.isFinite(fallbackCandidate) ? fallbackCandidate : 0;
+    return fallback > 0 ? fallback : 0;
+  };
+
+  const toInputString = (value) => {
+    const rounded = roundMoney(value);
+    return Number.isFinite(rounded) ? String(rounded) : '0';
+  };
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -118,17 +167,19 @@ const SaleList = () => {
 
   const openEdit = (sale) => {
     if (!sale) return;
+    const financials = sale.financials || computeSaleFinancials(sale);
     const normalized = {
       productId: String(sale.productId || ''),
       quantity: String(sale.quantity ?? ''),
       unitPrice: sale.unitPrice !== undefined && sale.unitPrice !== null ? String(sale.unitPrice) : '',
       gananciaUnit: sale.gananciaUnit !== undefined && sale.gananciaUnit !== null ? String(sale.gananciaUnit) : '',
-      realSaleValue: sale.realSaleValue !== undefined && sale.realSaleValue !== null && sale.realSaleValue !== ''
-        ? String(sale.realSaleValue)
-        : '',
+      realSaleValue: financials.realSaleValue !== null ? String(financials.realSaleValue) : '',
       customerName: sale.customerName || '',
       date: sale.date || '',
-      paymentMethod: sale.paymentMethod || ''
+      paymentMethod: sale.paymentMethod || '',
+      paymentReceived: String(financials.paymentReceived),
+      paymentPending: String(financials.paymentPending),
+      paymentNotes: sale.paymentNotes || ''
     };
     setEditingSale(sale);
     setEditData(normalized);
@@ -139,15 +190,34 @@ const SaleList = () => {
 
   const handleEditFieldChange = (field) => (e) => {
     const value = e && e.target ? e.target.value : e;
-    setEditData(prev => {
-      const next = { ...(prev || {}), [field]: value };
-      if (initialEditData) {
-        const dirty = Object.keys(next).some(key => (next[key] ?? '') !== (initialEditData[key] ?? ''));
-        setEditDirty(dirty);
-      } else {
-        setEditDirty(true);
-      }
-      return next;
+    syncEditData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleEditPaymentReceivedChange = (e) => {
+    const value = e && e.target ? e.target.value : e;
+    syncEditData(prev => {
+      const base = { ...prev, paymentReceived: value ?? '' };
+      const total = getEditEffectiveTotal(base);
+      const payments = normalizePayments(total, base.paymentReceived, base.paymentPending ?? 0);
+      return {
+        ...base,
+        paymentReceived: toInputString(payments.paymentReceived),
+        paymentPending: toInputString(payments.paymentPending)
+      };
+    });
+  };
+
+  const handleEditPaymentPendingChange = (e) => {
+    const value = e && e.target ? e.target.value : e;
+    syncEditData(prev => {
+      const base = { ...prev, paymentPending: value ?? '' };
+      const total = getEditEffectiveTotal(base);
+      const payments = normalizePayments(total, base.paymentReceived ?? 0, base.paymentPending);
+      return {
+        ...base,
+        paymentReceived: toInputString(payments.paymentReceived),
+        paymentPending: toInputString(payments.paymentPending)
+      };
     });
   };
 
@@ -187,6 +257,14 @@ const SaleList = () => {
     if (!Number.isFinite(unit) || unit < 0) return false;
     if (!Number.isFinite(gain) || gain < 0) return false;
     if (editData.realSaleValue !== '' && !Number.isFinite(Number(editData.realSaleValue))) return false;
+    if (editData.paymentReceived !== undefined && editData.paymentReceived !== '') {
+      const received = Number(editData.paymentReceived);
+      if (!Number.isFinite(received) || received < 0) return false;
+    }
+    if (editData.paymentPending !== undefined && editData.paymentPending !== '') {
+      const pending = Number(editData.paymentPending);
+      if (!Number.isFinite(pending) || pending < 0) return false;
+    }
     return true;
   }, [editData]);
 
@@ -204,7 +282,24 @@ const SaleList = () => {
     const realSaleValid = realSaleValRaw !== null && Number.isFinite(realSaleValRaw);
     const realSaleVal = realSaleValid ? realSaleValRaw : null;
     const realProfit = realSaleVal !== null ? realSaleVal - cost : null;
-    return { qty, cost, gain, total, realSaleVal, realProfit };
+    const rawFallbackTotal = editingSale?.financials?.effectiveSaleValue ?? Number(editingSale?.total);
+    const fallbackTotal = rawFallbackTotal || 0;
+    const effectiveTotal = realSaleVal !== null
+      ? realSaleVal
+      : (total > 0 ? total : fallbackTotal);
+    const payments = normalizePayments(effectiveTotal, editData.paymentReceived, editData.paymentPending);
+    const paymentStatus = determinePaymentStatus(effectiveTotal, payments.paymentReceived, payments.paymentPending);
+    return {
+      qty,
+      cost,
+      gain,
+      total,
+      realSaleVal,
+      realProfit,
+      effectiveTotal,
+      payments,
+      paymentStatus
+    };
   }, [editData]);
 
   const getAvailableNumber = (product) => {
@@ -239,7 +334,11 @@ const SaleList = () => {
     const costNum = numberOrZero(editData.unitPrice);
     const gainNum = numberOrZero(editData.gananciaUnit);
     const totalComputed = Math.max(qtyNum * (costNum + gainNum), 0);
-    const realSaleValue = editData.realSaleValue === '' ? null : Number(editData.realSaleValue);
+    const realSaleValueRaw = editData.realSaleValue === '' ? null : numberOrZero(editData.realSaleValue);
+    const realSaleValue = realSaleValueRaw === null ? null : roundMoney(Math.max(realSaleValueRaw, 0));
+    const effectiveTotal = getEditEffectiveTotal(editData);
+    const payments = normalizePayments(effectiveTotal, editData.paymentReceived, editData.paymentPending);
+    const paymentNotes = editData.paymentNotes && editData.paymentNotes.trim() ? editData.paymentNotes.trim() : null;
 
     const normalizeName = (n) => {
       if (!n) return null;
@@ -292,7 +391,10 @@ const SaleList = () => {
       gananciaUnit: gainNum,
       total: totalComputed,
       paymentMethod: editData.paymentMethod,
-      realSaleValue
+      realSaleValue,
+      paymentReceived: payments.paymentReceived,
+      paymentPending: payments.paymentPending,
+      paymentNotes
     };
 
     setSavingEdit(true);
@@ -340,6 +442,7 @@ const SaleList = () => {
     if (!sale?.id) return;
     try {
       const quantityNumber = Number(sale.quantity) || 0;
+      const { financials, ...saleWithoutFinancials } = sale;
       const product = products.find(p => String(p.id) === String(sale.productId));
       const previousAvailable = product && typeof product.available === 'number'
         ? Number(product.available)
@@ -353,11 +456,14 @@ const SaleList = () => {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated)
         });
         setProducts(prev => prev.map(p => (String(p.id) === String(product.id) ? updated : p)));
-        setLastDeletedSale({ sale, productSnapshot: { id: product.id, availableBefore: previousAvailable } });
+        setLastDeletedSale({ sale: saleWithoutFinancials, productSnapshot: { id: product.id, availableBefore: previousAvailable } });
       } else {
-        setLastDeletedSale({ sale, productSnapshot: null });
+        setLastDeletedSale({ sale: saleWithoutFinancials, productSnapshot: null });
       }
       setSales(prev => prev.filter(s => s.id !== sale.id));
+      if (editingSale && String(editingSale.id) === String(sale.id)) {
+        closeEdit();
+      }
       closeConfirm();
     } catch (err) {
       console.error(err);
@@ -368,7 +474,7 @@ const SaleList = () => {
     if (!lastDeletedSale) return;
     try {
       const { sale, productSnapshot } = lastDeletedSale;
-      const { product, ...saleData } = sale;
+      const { product, financials, ...saleData } = sale;
       let res = await fetch('/api/sales', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -457,25 +563,32 @@ const SaleList = () => {
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia estimada (confección)</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo total producto</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Valor venta real</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Estado</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago recibido</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago pendiente</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia real</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Cliente</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago</th>
-              <th style={{ borderBottom: '1px solid #ddd', padding: '12px 8px' }}></th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Medio de pago</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Observaciones forma de pago</th>
             </tr>
           </thead>
           <tbody>
             {displayed.map(s => {
-              const qty = Number(s.quantity) || 0;
-              const costMaterials = Number(s.unitPrice) || 0;
-              const estimatedGain = Number(s.gananciaUnit) || 0;
-              const computed = qty * (costMaterials + estimatedGain);
-              const fallbackTotal = Number(s.total) || 0;
-              const costTotal = computed > 0 ? computed : fallbackTotal;
-              const realSaleRaw = s.realSaleValue;
-              const hasRealSale = realSaleRaw !== null && realSaleRaw !== undefined && realSaleRaw !== '';
-              const realSaleAmount = hasRealSale ? Number(realSaleRaw) : NaN;
-              const validRealSale = hasRealSale && !Number.isNaN(realSaleAmount);
-              const realProfit = validRealSale ? realSaleAmount - costMaterials : null;
+              const fin = s.financials || computeSaleFinancials(s);
+              const costMaterials = Number.isFinite(fin.unitCost) ? fin.unitCost : 0;
+              const estimatedGain = Number.isFinite(fin.estimatedGain) ? fin.estimatedGain : 0;
+              const costTotal = fin.computedTotal > 0 ? fin.computedTotal : fin.fallbackTotal;
+              const hasRealSale = fin.realSaleValue !== null && fin.realSaleValue !== undefined;
+              const realSaleAmount = hasRealSale ? fin.realSaleValue : null;
+              const realProfit = hasRealSale ? realSaleAmount - costMaterials : null;
+              const paymentReceivedText = `$${fin.paymentReceived.toFixed(2)}`;
+              const paymentPendingText = `$${fin.paymentPending.toFixed(2)}`;
+              const status = fin.paymentStatus;
+              const statusStyle = {
+                color: paymentStatusColor(status),
+                fontWeight: status === 'Pendiente de Pago' ? 600 : 500
+              };
+              const observations = s.paymentNotes && s.paymentNotes.trim() ? s.paymentNotes.trim() : '—';
 
               return (
                 <tr
@@ -511,10 +624,16 @@ const SaleList = () => {
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>{costMaterials ? `$${costMaterials.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>{estimatedGain ? `$${estimatedGain.toFixed(2)}` : '$0.00'}</td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>$ {costTotal.toFixed(2)}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{validRealSale ? `$${realSaleAmount.toFixed(2)}` : '—'}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{validRealSale ? `$${realProfit.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{hasRealSale ? `$${realSaleAmount.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px' }}>
+                    <span style={statusStyle}>{status}</span>
+                  </td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{paymentReceivedText}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{paymentPendingText}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{realProfit !== null ? `$${realProfit.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: '12px 8px' }}>{capitalize(s.customerName) || '—'}</td>
                   <td style={{ padding: '12px 8px' }}>{s.paymentMethod || '—'}</td>
+                  <td style={{ padding: '12px 8px' }}>{observations}</td>
                 </tr>
               );
             })}
@@ -619,6 +738,41 @@ const SaleList = () => {
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label>Pago recibido</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={editData.paymentReceived ?? '0'}
+                    onChange={handleEditPaymentReceivedChange}
+                    style={{ padding: 8 }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label>Pago pendiente</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={editData.paymentPending ?? '0'}
+                    onChange={handleEditPaymentPendingChange}
+                    style={{ padding: 8 }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label>Observaciones forma de pago</label>
+                  <textarea
+                    rows={2}
+                    style={{ padding: 8, resize: 'vertical' }}
+                    value={editData.paymentNotes || ''}
+                    onChange={handleEditFieldChange('paymentNotes')}
+                    placeholder="Notas sobre cobros, plazos, etc."
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <label>Cliente</label>
                   <input
                     type="text"
@@ -665,6 +819,9 @@ const SaleList = () => {
                   <div><strong>Ganancia real:</strong> {editPreview?.realProfit !== null
                     ? `$${editPreview.realProfit.toFixed(2)}`
                     : '—'}</div>
+                  <div><strong>Pago recibido:</strong> ${editPreview ? editPreview.payments.paymentReceived.toFixed(2) : '0.00'}</div>
+                  <div><strong>Pago pendiente:</strong> ${editPreview ? editPreview.payments.paymentPending.toFixed(2) : '0.00'}</div>
+                  <div><strong>Estado del pago:</strong> <span style={{ color: paymentStatusColor(editPreview?.paymentStatus || 'Pagado') }}>{editPreview?.paymentStatus || 'Pagado'}</span></div>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
@@ -712,8 +869,8 @@ const SaleList = () => {
       {/* Popup confirmación borrado */}
       {confirmOpen && (
         <>
-          <div style={{ position: 'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', zIndex: 1400 }} onClick={closeConfirm} />
-          <div style={{ position: 'fixed', top:'50%', left:'50%', transform:'translate(-50%, -50%)', background:'#fff', padding:20, borderRadius:8, zIndex: 1401, width:'90%', maxWidth:420 }}>
+          <div style={{ position: 'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', zIndex: 1600 }} onClick={closeConfirm} />
+          <div style={{ position: 'fixed', top:'50%', left:'50%', transform:'translate(-50%, -50%)', background:'#fff', padding:20, borderRadius:8, zIndex: 1601, width:'90%', maxWidth:420 }}>
             <h3 style={{ marginTop: 0 }}>Confirmar borrado</h3>
             <p>¿Querés borrar la venta de <strong>{saleToDelete?.product?.name || `#${saleToDelete?.productId}`}</strong> del día {saleToDelete?.date}?</p>
             <div style={{ display:'flex', justifyContent:'flex-end', gap: 8 }}>
