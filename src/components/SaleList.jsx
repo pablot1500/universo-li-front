@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { computeSaleFinancials, normalizePayments, determinePaymentStatus, roundMoney } from '../utils/salePayments';
+import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
 
 const paymentStatusColor = (status) => {
   if (status === 'Pendiente de Pago') return '#b91c1c';
@@ -43,13 +44,14 @@ const SaleList = () => {
     return t.charAt(0).toUpperCase() + t.slice(1);
   };
 
+  const productMap = useMemo(() => buildProductMap(products), [products]);
+
   const joinedSales = useMemo(() => {
-    const map = new Map(products.map(p => [String(p.id), p]));
     return sales.map(s => ({
       ...s,
-      product: map.get(String(s.productId)) || null
+      product: productMap.get(String(s.productId)) || null
     }));
-  }, [sales, products]);
+  }, [sales, productMap]);
 
   const enrichedSales = useMemo(() => {
     return joinedSales.map(sale => ({
@@ -160,14 +162,79 @@ const SaleList = () => {
 
   const displayed = useMemo(() => sorted.slice(0, pageSize), [sorted, pageSize]);
 
+  const displayedRows = useMemo(() => {
+    return displayed.map(s => {
+      const fin = s.financials || computeSaleFinancials(s);
+      const costMaterials = Number.isFinite(fin.unitCost) ? fin.unitCost : 0;
+      const estimatedGain = Number.isFinite(fin.estimatedGain) ? fin.estimatedGain : 0;
+      const costTotal = fin.computedTotal > 0 ? fin.computedTotal : fin.fallbackTotal;
+      const hasRealSale = fin.realSaleValue !== null && fin.realSaleValue !== undefined;
+      const realSaleDisplay = hasRealSale ? fin.realSaleValue : null;
+      const realSaleAmount = hasRealSale ? fin.realSaleValue : 0;
+      const realProfitValue = hasRealSale ? realSaleAmount - costMaterials : 0;
+      return {
+        sale: s,
+        fin,
+        costMaterials,
+        estimatedGain,
+        costTotal,
+        hasRealSale,
+        realSaleDisplay,
+        realSaleAmount,
+        realProfitDisplay: hasRealSale ? realProfitValue : null,
+        realProfitValue,
+        paymentReceived: fin.paymentReceived,
+        paymentPending: fin.paymentPending,
+        status: fin.paymentStatus
+      };
+    });
+  }, [displayed]);
+
+  const saleTotals = useMemo(() => {
+    return displayedRows.reduce((acc, row) => {
+      if (row.hasRealSale) {
+        acc.realSaleValue += row.realSaleAmount;
+        acc.realProfit += row.realProfitValue;
+      }
+      acc.paymentReceived += row.paymentReceived;
+      acc.paymentPending += row.paymentPending;
+      return acc;
+    }, {
+      realSaleValue: 0,
+      paymentReceived: 0,
+      paymentPending: 0,
+      realProfit: 0
+    });
+  }, [displayedRows]);
+
   const editProductExists = useMemo(() => {
     if (!editData) return false;
     return products.some(p => String(p.id) === String(editData.productId));
   }, [editData, products]);
 
+  const editSelectedProduct = useMemo(() => {
+    if (!editData) return null;
+    const direct = productMap.get(String(editData.productId));
+    if (direct) return direct;
+    if (editingSale?.product && String(editingSale.product.id) === String(editData.productId)) {
+      return editingSale.product;
+    }
+    return null;
+  }, [editData, editingSale, productMap]);
+
+  const editSelectedSummary = useMemo(() => {
+    if (!editSelectedProduct) return null;
+    return computeProductCostSummary(editSelectedProduct, productMap);
+  }, [editSelectedProduct, productMap]);
+
+  const isEditComposite = editSelectedSummary?.isComposite || false;
+  const editCompositeBreakdown = isEditComposite ? (editSelectedSummary?.breakdown || []) : [];
+
   const openEdit = (sale) => {
     if (!sale) return;
     const financials = sale.financials || computeSaleFinancials(sale);
+    const product = sale.product || productMap.get(String(sale.productId)) || null;
+    const summary = product ? computeProductCostSummary(product, productMap) : null;
     const normalized = {
       productId: String(sale.productId || ''),
       quantity: String(sale.quantity ?? ''),
@@ -181,7 +248,11 @@ const SaleList = () => {
       paymentPending: String(financials.paymentPending),
       paymentNotes: sale.paymentNotes || ''
     };
-    setEditingSale(sale);
+    if (summary?.isComposite) {
+      normalized.unitPrice = toInputString(summary.costMaterials);
+      normalized.gananciaUnit = toInputString(summary.estimatedGain);
+    }
+    setEditingSale(product ? { ...sale, product } : sale);
     setEditData(normalized);
     setInitialEditData({ ...normalized });
     setEditDirty(false);
@@ -190,6 +261,25 @@ const SaleList = () => {
 
   const handleEditFieldChange = (field) => (e) => {
     const value = e && e.target ? e.target.value : e;
+    if (field === 'productId') {
+      const nextProduct = productMap.get(String(value));
+      const summary = nextProduct ? computeProductCostSummary(nextProduct, productMap) : null;
+      syncEditData(prev => {
+        const base = { ...prev, productId: value };
+        if (summary?.isComposite) {
+          return {
+            ...base,
+            unitPrice: toInputString(summary.costMaterials),
+            gananciaUnit: toInputString(summary.estimatedGain)
+          };
+        }
+        return base;
+      });
+      return;
+    }
+    if ((field === 'unitPrice' || field === 'gananciaUnit') && isEditComposite) {
+      return;
+    }
     syncEditData(prev => ({ ...prev, [field]: value }));
   };
 
@@ -220,6 +310,31 @@ const SaleList = () => {
       };
     });
   };
+
+  useEffect(() => {
+    if (!editData || !isEditComposite || !editSelectedSummary) return;
+    const targetCost = editSelectedSummary.costMaterials;
+    const targetGain = editSelectedSummary.estimatedGain;
+    const currentCost = Number(editData.unitPrice);
+    const currentGain = Number(editData.gananciaUnit);
+    const approx = (a, b) => Math.abs((Number.isFinite(a) ? a : 0) - (Number.isFinite(b) ? b : 0)) < 0.01;
+    if (approx(currentCost, targetCost) && approx(currentGain, targetGain)) return;
+    setEditData(prev => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        unitPrice: toInputString(targetCost),
+        gananciaUnit: toInputString(targetGain)
+      };
+      if (initialEditData) {
+        const dirty = Object.keys(next).some(key => (next[key] ?? '') !== (initialEditData[key] ?? ''));
+        setEditDirty(dirty);
+      } else {
+        setEditDirty(true);
+      }
+      return next;
+    });
+  }, [editData, isEditComposite, editSelectedSummary, initialEditData]);
 
   const closeEdit = () => {
     setEditingSale(null);
@@ -562,8 +677,8 @@ const SaleList = () => {
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo materiales</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia estimada (confección)</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo total producto</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Valor venta real</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Estado</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Valor venta real</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago recibido</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago pendiente</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia real</th>
@@ -573,20 +688,11 @@ const SaleList = () => {
             </tr>
           </thead>
           <tbody>
-            {displayed.map(s => {
-              const fin = s.financials || computeSaleFinancials(s);
-              const costMaterials = Number.isFinite(fin.unitCost) ? fin.unitCost : 0;
-              const estimatedGain = Number.isFinite(fin.estimatedGain) ? fin.estimatedGain : 0;
-              const costTotal = fin.computedTotal > 0 ? fin.computedTotal : fin.fallbackTotal;
-              const hasRealSale = fin.realSaleValue !== null && fin.realSaleValue !== undefined;
-              const realSaleAmount = hasRealSale ? fin.realSaleValue : null;
-              const realProfit = hasRealSale ? realSaleAmount - costMaterials : null;
-              const paymentReceivedText = `$${fin.paymentReceived.toFixed(2)}`;
-              const paymentPendingText = `$${fin.paymentPending.toFixed(2)}`;
-              const status = fin.paymentStatus;
+            {displayedRows.map(row => {
+              const s = row.sale;
               const statusStyle = {
-                color: paymentStatusColor(status),
-                fontWeight: status === 'Pendiente de Pago' ? 600 : 500
+                color: paymentStatusColor(row.status),
+                fontWeight: row.status === 'Pendiente de Pago' ? 600 : 500
               };
               const observations = s.paymentNotes && s.paymentNotes.trim() ? s.paymentNotes.trim() : '—';
 
@@ -621,16 +727,16 @@ const SaleList = () => {
                     </div>
                   </td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>{s.quantity}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{costMaterials ? `$${costMaterials.toFixed(2)}` : '—'}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{estimatedGain ? `$${estimatedGain.toFixed(2)}` : '$0.00'}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>$ {costTotal.toFixed(2)}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{hasRealSale ? `$${realSaleAmount.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.costMaterials ? `$${row.costMaterials.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.estimatedGain ? `$${row.estimatedGain.toFixed(2)}` : '$0.00'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>$ {row.costTotal.toFixed(2)}</td>
                   <td style={{ padding: '12px 8px' }}>
-                    <span style={statusStyle}>{status}</span>
+                    <span style={statusStyle}>{row.status}</span>
                   </td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{paymentReceivedText}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{paymentPendingText}</td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{realProfit !== null ? `$${realProfit.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.hasRealSale ? `$${row.realSaleDisplay.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{`$${row.paymentReceived.toFixed(2)}`}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{`$${row.paymentPending.toFixed(2)}`}</td>
+                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.realProfitDisplay !== null ? `$${row.realProfitDisplay.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: '12px 8px' }}>{capitalize(s.customerName) || '—'}</td>
                   <td style={{ padding: '12px 8px' }}>{s.paymentMethod || '—'}</td>
                   <td style={{ padding: '12px 8px' }}>{observations}</td>
@@ -638,6 +744,26 @@ const SaleList = () => {
               );
             })}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={7} style={{ padding: '12px 8px', fontWeight: 600, textAlign: 'right' }}>
+                Subtotales ({displayedRows.length} ventas)
+              </td>
+              <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                ${roundMoney(saleTotals.realSaleValue).toFixed(2)}
+              </td>
+              <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                ${roundMoney(saleTotals.paymentReceived).toFixed(2)}
+              </td>
+              <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                ${roundMoney(saleTotals.paymentPending).toFixed(2)}
+              </td>
+              <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                ${roundMoney(saleTotals.realProfit).toFixed(2)}
+              </td>
+              <td colSpan={3} />
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -708,7 +834,11 @@ const SaleList = () => {
                     step="0.01"
                     value={editData.unitPrice}
                     onChange={handleEditFieldChange('unitPrice')}
-                    style={{ padding: 8 }}
+                    readOnly={isEditComposite}
+                    style={{
+                      padding: 8,
+                      ...(isEditComposite ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed' } : {})
+                    }}
                     required
                   />
                 </div>
@@ -721,9 +851,39 @@ const SaleList = () => {
                     step="0.01"
                     value={editData.gananciaUnit}
                     onChange={handleEditFieldChange('gananciaUnit')}
-                    style={{ padding: 8 }}
+                    readOnly={isEditComposite}
+                    style={{
+                      padding: 8,
+                      ...(isEditComposite ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed' } : {})
+                    }}
                   />
                 </div>
+
+                {isEditComposite && editCompositeBreakdown.length > 0 && (
+                  <div
+                    style={{
+                      backgroundColor: '#f9fafb',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 6,
+                      padding: 12,
+                      display: 'grid',
+                      gap: 8
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>Desglose por producto (valores unitarios)</div>
+                    {editCompositeBreakdown.map((item, index) => (
+                      <div
+                        key={`${item.id ?? item.name ?? 'item'}-${index}`}
+                        style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+                      >
+                        <span>{item.name || `Producto ${item.id}`}</span>
+                        <span style={{ fontSize: 13, color: '#4b5563' }}>
+                          Costo materiales: ${roundMoney(item.costMaterials).toFixed(2)} — Ganancia estimada: ${roundMoney(item.estimatedGain).toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <label>Valor venta real</label>

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
 
 const SaleForm = ({ onSaleAdded }) => {
   const [products, setProducts] = useState([]);
@@ -44,6 +45,13 @@ const SaleForm = ({ onSaleAdded }) => {
     () => products.find(p => String(p.id) === String(productId)),
     [products, productId]
   );
+  const productMap = useMemo(() => buildProductMap(products), [products]);
+  const selectedSummary = useMemo(() => {
+    if (!selectedProduct) return null;
+    return computeProductCostSummary(selectedProduct, productMap);
+  }, [selectedProduct, productMap]);
+  const isCompositeSelected = selectedSummary?.isComposite || false;
+  const compositeBreakdown = isCompositeSelected ? (selectedSummary?.breakdown || []) : [];
 
   const qtyNum = Number(quantity) || 0;
   const priceNum = Number(unitPrice) || 0;
@@ -230,16 +238,32 @@ const SaleForm = ({ onSaleAdded }) => {
   };
 
   useEffect(() => {
-    // Al cambiar el producto, sugerir precio
+    if (!selectedProduct) return;
+
+    if (isCompositeSelected && selectedSummary) {
+      const costValue = toInputString(selectedSummary.costMaterials);
+      const gainValue = toInputString(selectedSummary.estimatedGain);
+      setUnitPrice(costValue);
+      setGananciaUnit(gainValue);
+      return;
+    }
+
+    // Al cambiar el producto simple, sugerir precio y ganancia si existen valores cargados
     setUnitPrice(prev => {
       const suggested = computeProductCurrentTotal(selectedProduct);
-      return suggested || prev || '';
+      if (Number.isFinite(suggested) && suggested > 0) {
+        return toInputString(suggested);
+      }
+      return prev || '';
     });
     setGananciaUnit(prev => {
       const suggested = Number(selectedProduct?.costoConfeccion) || 0;
-      return suggested || prev || '';
+      if (suggested > 0) {
+        return toInputString(suggested);
+      }
+      return prev || '';
     });
-  }, [productId]);
+  }, [selectedProduct, isCompositeSelected, selectedSummary]);
 
   const overlayStyle = {
     position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1700
@@ -314,8 +338,15 @@ const SaleForm = ({ onSaleAdded }) => {
             min="0"
             step="0.01"
             value={unitPrice}
-            onChange={(e) => setUnitPrice(e.target.value)}
+            onChange={(e) => {
+              if (isCompositeSelected) return;
+              setUnitPrice(e.target.value);
+            }}
             required
+            readOnly={isCompositeSelected}
+            style={{
+              ...(isCompositeSelected ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed' } : {})
+            }}
           />
         </div>
 
@@ -327,9 +358,45 @@ const SaleForm = ({ onSaleAdded }) => {
             min="0"
             step="0.01"
             value={gananciaUnit}
-            onChange={(e) => setGananciaUnit(e.target.value)}
+            onChange={(e) => {
+              if (isCompositeSelected) return;
+              setGananciaUnit(e.target.value);
+            }}
+            readOnly={isCompositeSelected}
+            style={{
+              ...(isCompositeSelected ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed' } : {})
+            }}
           />
         </div>
+
+        {isCompositeSelected && compositeBreakdown.length > 0 && (
+          <div
+            className="form-group"
+            style={{
+              backgroundColor: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: 6,
+              padding: 12,
+              display: 'grid',
+              gap: 8
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>
+              Desglose por producto (valores unitarios)
+            </div>
+            {compositeBreakdown.map((item, index) => (
+              <div
+                key={`${item.id ?? item.name ?? 'item'}-${index}`}
+                style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+              >
+                <span>{item.name || `Producto ${item.id}`}</span>
+                <span style={{ fontSize: 13, color: '#4b5563' }}>
+                  Costo materiales: ${roundMoney(item.costMaterials).toFixed(2)} — Ganancia estimada: ${roundMoney(item.estimatedGain).toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="form-group">
           <label className="form-label">Valor venta real</label>
