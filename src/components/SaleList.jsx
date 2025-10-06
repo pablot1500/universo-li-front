@@ -207,6 +207,16 @@ const SaleList = () => {
     });
   }, [displayedRows]);
 
+  const subtotalLabelStyle = {
+    display: 'block',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: '0.02em',
+    color: '#4b5563',
+    fontWeight: 500,
+    marginBottom: 4
+  };
+
   const editProductExists = useMemo(() => {
     if (!editData) return false;
     return products.some(p => String(p.id) === String(editData.productId));
@@ -750,15 +760,19 @@ const SaleList = () => {
                 Subtotales ({displayedRows.length} ventas)
               </td>
               <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                <span style={subtotalLabelStyle}>Valor venta real</span>
                 ${roundMoney(saleTotals.realSaleValue).toFixed(2)}
               </td>
               <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                <span style={subtotalLabelStyle}>Pago recibido</span>
                 ${roundMoney(saleTotals.paymentReceived).toFixed(2)}
               </td>
               <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                <span style={subtotalLabelStyle}>Pago pendiente</span>
                 ${roundMoney(saleTotals.paymentPending).toFixed(2)}
               </td>
               <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
+                <span style={subtotalLabelStyle}>Ganancia real</span>
                 ${roundMoney(saleTotals.realProfit).toFixed(2)}
               </td>
               <td colSpan={3} />
