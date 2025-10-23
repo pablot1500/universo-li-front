@@ -64,7 +64,8 @@ export const determinePaymentStatus = (total, received, pending = null) => {
 };
 
 export const computeSaleFinancials = (sale = {}) => {
-  const qty = Number(sale.quantity) || 0;
+  const rawQty = Number(sale.quantity);
+  const qty = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1;
   const unitCost = Number(sale.unitPrice) || 0;
   const estimatedGain = Number(sale.gananciaUnit) || 0;
   const costMaterials = clampNonNegative(qty * unitCost);

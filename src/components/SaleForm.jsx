@@ -4,13 +4,14 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
 
+const DEFAULT_SALE_QUANTITY = 1;
+
 const SaleForm = ({ onSaleAdded }) => {
   const [products, setProducts] = useState([]);
   const [category, setCategory] = useState('');
 
   // Campos de la venta
   const [productId, setProductId] = useState('');
-  const [quantity, setQuantity] = useState('1');
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [customerName, setCustomerName] = useState('');
   const [unitPrice, setUnitPrice] = useState('');
@@ -53,7 +54,7 @@ const SaleForm = ({ onSaleAdded }) => {
   const isCompositeSelected = selectedSummary?.isComposite || false;
   const compositeBreakdown = isCompositeSelected ? (selectedSummary?.breakdown || []) : [];
 
-  const qtyNum = Number(quantity) || 0;
+  const qtyNum = DEFAULT_SALE_QUANTITY;
   const priceNum = Number(unitPrice) || 0;
   const gananciaNum = Number(gananciaUnit) || 0;
   const realSaleValueNum = Number(realSaleValue) || 0;
@@ -168,7 +169,7 @@ const SaleForm = ({ onSaleAdded }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!category || !productId || qtyNum <= 0 || priceNum <= 0) return;
+    if (!category || !productId || priceNum <= 0) return;
     setShowConfirm(true);
   };
 
@@ -202,24 +203,12 @@ const SaleForm = ({ onSaleAdded }) => {
         body: JSON.stringify(newSale)
       });
       if (!response.ok) throw new Error('Error creating sale');
-      // Descontar stock
-      try {
-        if (selectedProduct && typeof selectedProduct.available === 'number') {
-          const newAvailable = Math.max((selectedProduct.available || 0) - qtyNum, 0);
-          const updated = { ...selectedProduct, available: newAvailable };
-          await fetch(`/api/products/${selectedProduct.id}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated)
-          });
-        }
-      } catch (err) { console.warn('No se pudo actualizar el stock:', err); }
-      // Refrescar productos para reflejar stock actualizado
       await reloadProducts();
 
       // Reset
       setShowConfirm(false);
       setCategory('');
       setProductId('');
-      setQuantity('1');
       setDate(new Date().toISOString().split('T')[0]);
       setCustomerName('');
       setUnitPrice('');
@@ -311,23 +300,6 @@ const SaleForm = ({ onSaleAdded }) => {
               <option key={product.id} value={product.id}>{product.name}</option>
             ))}
           </select>
-          {selectedProduct && (
-            <p style={{ marginTop: 4, color: '#555' }}>
-              Disponible: {selectedProduct.available ?? '—'}
-            </p>
-          )}
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Cantidad</label>
-          <input
-            className="form-input"
-            type="number"
-            min="1"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            required
-          />
         </div>
 
         <div className="form-group">

@@ -663,7 +663,6 @@ const ProductsPage = () => {
         ...baseCopy,
         name: data.name,
         category: data.category,
-        available: data.available,
       };
       payload.type = data?.type || baseCopy?.type || 'simple';
       if (payload.type === 'composite') {
@@ -674,6 +673,9 @@ const ProductsPage = () => {
         delete payload.compositeItems;
       }
       delete payload.id;
+      if ('available' in payload) {
+        delete payload.available;
+      }
       if (!payload.componentes) {
         payload.componentes = { telas: [], otros: [] };
       }
@@ -1906,7 +1908,6 @@ const ProductsPage = () => {
                         category: (pendingProductType || 'simple') === 'composite'
                           ? COMPOSITE_CATEGORY
                           : '',
-                        available: '',
                         type: pendingProductType || 'simple'
                       }
               }
@@ -2832,11 +2833,7 @@ const ProductsPage = () => {
                   if (c?.category) {
                     secondaryLines.push(`Categoría: ${c.category}`);
                   }
-                  const availableLabel = Number.isFinite(Number(c?.available))
-                    ? `Disponible: ${Number(c.available)}`
-                    : null;
                   secondaryLines.push(`Total (telas + otros + confección): $ ${fmt2(totals.totalConConfeccion)}`);
-                  if (availableLabel) secondaryLines.push(availableLabel);
                 } else {
                   const priceNumber = Number(c?.price);
                   const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';

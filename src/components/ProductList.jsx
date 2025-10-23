@@ -292,7 +292,6 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
           return (<p style={{ color: '#aaa' }}>Definir los materiales del producto para ver el precio</p>);
         })()}
         <p>Categoría: {product.category}</p>
-        <p>Disponible: {product.available}</p>
         <button style={{ marginRight: '8px' }} onClick={() => onEditProduct && onEditProduct(product)}>Editar</button>
         <button style={{ marginRight: '8px' }} onClick={() => onCopyProduct && onCopyProduct(product)}>Copiar</button>
         <button style={{ marginRight: '8px' }} onClick={() => toggleFeatured(product)}>
@@ -560,7 +559,6 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
                     return (<p style={{ color: '#aaa' }}>Definir los materiales del producto para ver el precio</p>);
                   })()}
                   <p>Categoría: {product.category}</p>
-                  <p>Disponible: {product.available}</p>
                   <button style={{ marginRight: '8px' }} onClick={() => onEditProduct && onEditProduct(product)}>Editar</button>
                   <button style={{ marginRight: '8px' }} onClick={() => onCopyProduct && onCopyProduct(product)}>Copiar</button>
                   <button onClick={() => onDeleteProduct ? onDeleteProduct(product) : null}>Eliminar</button>
@@ -667,7 +665,6 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
                           return (<p style={{ color: '#aaa' }}>Definir los materiales del producto para ver el precio</p>);
                         })()}
                         <p>Categoría: {product.category}</p>
-                        <p>Disponible: {product.available}</p>
                         <button style={{ marginRight: '8px' }} onClick={() => onEditProduct && onEditProduct(product)}>Editar</button>
                         <button style={{ marginRight: '8px' }} onClick={() => onCopyProduct && onCopyProduct(product)}>Copiar</button>
                         <button onClick={() => onDeleteProduct ? onDeleteProduct(product) : null}>Eliminar</button>

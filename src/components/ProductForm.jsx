@@ -6,7 +6,6 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
   const [formData, setFormData] = useState({
     name: '',
     category: '',
-    available: '',
     type: 'simple',
     ...initialValues
   });
@@ -19,7 +18,6 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
     const base = {
       name: '',
       category: '',
-      available: '',
       type: nextType,
       ...initialValues
     };
@@ -78,7 +76,6 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
     onProductSubmit({
       name: formData.name,
       category: formData.category,
-      available: parseInt(formData.available, 10),
       type: effectiveType,
     });
   };
@@ -139,16 +136,6 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
             ))}
           </ul>
         )}
-      </div>
-      <div style={{ marginBottom: '16px' }}>
-        <label>Cantidad Disponible:</label>
-        <input
-          name="available"
-          type="number"
-          value={formData.available}
-          onChange={handleChange}
-          required
-        />
       </div>
       <button
         type="submit"

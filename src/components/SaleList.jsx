@@ -10,6 +10,8 @@ const paymentStatusColor = (status) => {
   return '#111827';
 };
 
+const DEFAULT_SALE_QUANTITY = 1;
+
 const SaleList = () => {
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
@@ -85,6 +87,14 @@ const SaleList = () => {
   const [editDirty, setEditDirty] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
+  const resolveQuantity = (rawValue, fallbackValue = editingSale?.quantity) => {
+    const parsed = Number(rawValue);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    const fallback = Number(fallbackValue);
+    if (Number.isFinite(fallback) && fallback > 0) return fallback;
+    return DEFAULT_SALE_QUANTITY;
+  };
+
   const syncEditData = (updater) => {
     setEditData(prev => {
       const base = prev ? { ...prev } : {};
@@ -101,7 +111,7 @@ const SaleList = () => {
   };
 
   const getEditEffectiveTotal = (data) => {
-    const qty = Number(data.quantity) || 0;
+    const qty = resolveQuantity(data?.quantity);
     const unit = Number(data.unitPrice) || 0;
     const gain = Number(data.gananciaUnit) || 0;
     const computed = Math.max(qty * (unit + gain), 0);
@@ -375,10 +385,8 @@ const SaleList = () => {
     for (const field of requiredFields) {
       if (!editData[field]) return false;
     }
-    const qty = Number(editData.quantity);
     const unit = Number(editData.unitPrice);
     const gain = Number(editData.gananciaUnit);
-    if (!Number.isFinite(qty) || qty <= 0) return false;
     if (!Number.isFinite(unit) || unit < 0) return false;
     if (!Number.isFinite(gain) || gain < 0) return false;
     if (editData.realSaleValue !== '' && !Number.isFinite(Number(editData.realSaleValue))) return false;
@@ -395,10 +403,9 @@ const SaleList = () => {
 
   const editPreview = useMemo(() => {
     if (!editData) return null;
-    const qtyRaw = Number(editData.quantity);
     const costRaw = Number(editData.unitPrice);
     const gainRaw = Number(editData.gananciaUnit);
-    const qty = Number.isFinite(qtyRaw) ? qtyRaw : 0;
+    const qty = resolveQuantity(editData.quantity);
     const cost = Number.isFinite(costRaw) ? costRaw : 0;
     const gain = Number.isFinite(gainRaw) ? gainRaw : 0;
     const totalRaw = qty * (cost + gain);
@@ -427,35 +434,10 @@ const SaleList = () => {
     };
   }, [editData]);
 
-  const getAvailableNumber = (product) => {
-    if (!product) return null;
-    const value = Number(product.available);
-    return Number.isFinite(value) ? value : null;
-  };
-
-  const updateProductAvailability = async (product, available) => {
-    if (!product || product.id === undefined) return;
-    const safeAvailable = available < 0 ? 0 : available;
-    const updated = { ...product, available: safeAvailable };
-    await fetch(`/api/products/${product.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated)
-    });
-  };
-
-  const showAlert = (message) => {
-    if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-      window.alert(message);
-    } else {
-      console.warn(message);
-    }
-  };
-
   const saveEdit = async () => {
     if (!editingSale || !editData || !isEditValid) return;
     const productId = String(editData.productId);
-    const qtyNum = Number(editData.quantity) || 0;
+    const qtyNum = resolveQuantity(editData.quantity, editingSale.quantity);
     const costNum = numberOrZero(editData.unitPrice);
     const gainNum = numberOrZero(editData.gananciaUnit);
     const totalComputed = Math.max(qtyNum * (costNum + gainNum), 0);
@@ -472,43 +454,9 @@ const SaleList = () => {
       return t.charAt(0).toUpperCase() + t.slice(1);
     };
 
-    const oldProductId = String(editingSale.productId);
-    const newProductId = productId;
-    const oldQty = Number(editingSale.quantity) || 0;
-
-    const oldProduct = products.find(p => String(p.id) === oldProductId);
-    const newProduct = products.find(p => String(p.id) === newProductId);
-    const oldAvailable = getAvailableNumber(oldProduct);
-    const newAvailableCurrent = getAvailableNumber(newProduct);
-
-    if (oldProductId === newProductId) {
-      if (oldAvailable !== null) {
-        const projectedAvailable = oldAvailable + oldQty - qtyNum;
-        if (projectedAvailable < 0) {
-          showAlert('No hay stock suficiente para la cantidad seleccionada.');
-          return;
-        }
-      }
-    } else {
-      if (oldAvailable !== null) {
-        const restoredAvailable = oldAvailable + oldQty;
-        if (restoredAvailable < 0) {
-          showAlert('Stock inválido al restaurar el producto original.');
-          return;
-        }
-      }
-      if (newAvailableCurrent !== null) {
-        const projectedNew = newAvailableCurrent - qtyNum;
-        if (projectedNew < 0) {
-          showAlert('No hay stock suficiente para el producto seleccionado.');
-          return;
-        }
-      }
-    }
-
     const payload = {
       id: editingSale.id,
-      productId: newProductId,
+      productId,
       quantity: qtyNum,
       date: editData.date,
       customerName: normalizeName(editData.customerName),
@@ -531,22 +479,6 @@ const SaleList = () => {
       });
       if (!res.ok) throw new Error('No se pudo actualizar la venta');
 
-      if (oldProductId === newProductId) {
-        if (oldAvailable !== null) {
-          const projectedAvailable = oldAvailable + oldQty - qtyNum;
-          await updateProductAvailability(oldProduct, projectedAvailable);
-        }
-      } else {
-        if (oldAvailable !== null) {
-          const restoredAvailable = oldAvailable + oldQty;
-          await updateProductAvailability(oldProduct, restoredAvailable);
-        }
-        if (newAvailableCurrent !== null) {
-          const projectedNew = newAvailableCurrent - qtyNum;
-          await updateProductAvailability(newProduct, projectedNew);
-        }
-      }
-
       await fetchAll();
       closeEdit();
     } catch (error) {
@@ -566,25 +498,10 @@ const SaleList = () => {
     const sale = saleToDelete;
     if (!sale?.id) return;
     try {
-      const quantityNumber = Number(sale.quantity) || 0;
       const { financials, ...saleWithoutFinancials } = sale;
-      const product = products.find(p => String(p.id) === String(sale.productId));
-      const previousAvailable = product && typeof product.available === 'number'
-        ? Number(product.available)
-        : null;
       const res = await fetch(`/api/sales/${sale.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('No se pudo borrar la venta');
-      if (product && previousAvailable !== null) {
-        const updatedAvailable = previousAvailable + quantityNumber;
-        const updated = { ...product, available: updatedAvailable };
-        await fetch(`/api/products/${product.id}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated)
-        });
-        setProducts(prev => prev.map(p => (String(p.id) === String(product.id) ? updated : p)));
-        setLastDeletedSale({ sale: saleWithoutFinancials, productSnapshot: { id: product.id, availableBefore: previousAvailable } });
-      } else {
-        setLastDeletedSale({ sale: saleWithoutFinancials, productSnapshot: null });
-      }
+      setLastDeletedSale({ sale: saleWithoutFinancials });
       setSales(prev => prev.filter(s => s.id !== sale.id));
       if (editingSale && String(editingSale.id) === String(sale.id)) {
         closeEdit();
@@ -598,7 +515,7 @@ const SaleList = () => {
   const undoDelete = async () => {
     if (!lastDeletedSale) return;
     try {
-      const { sale, productSnapshot } = lastDeletedSale;
+      const { sale } = lastDeletedSale;
       const { product, financials, ...saleData } = sale;
       let res = await fetch('/api/sales', {
         method: 'POST',
@@ -617,19 +534,6 @@ const SaleList = () => {
       }
 
       await res.json();
-
-      if (productSnapshot) {
-        const currentProduct = products.find(p => String(p.id) === String(productSnapshot.id));
-        if (currentProduct) {
-          const updatedProduct = { ...currentProduct, available: productSnapshot.availableBefore };
-          await fetch(`/api/products/${currentProduct.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedProduct)
-          });
-          setProducts(prev => prev.map(p => (String(p.id) === String(updatedProduct.id) ? updatedProduct : p)));
-        }
-      }
 
       await fetchAll();
       setLastDeletedSale(null);
@@ -683,7 +587,6 @@ const SaleList = () => {
             <tr>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Fecha</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Producto</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Cant.</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo materiales</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia estimada (confección)</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo total producto</th>
@@ -736,7 +639,6 @@ const SaleList = () => {
                       <span>{s.product?.name || `#${s.productId}`}</span>
                     </div>
                   </td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right' }}>{s.quantity}</td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.costMaterials ? `$${row.costMaterials.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>{row.estimatedGain ? `$${row.estimatedGain.toFixed(2)}` : '$0.00'}</td>
                   <td style={{ padding: '12px 8px', textAlign: 'right' }}>$ {row.costTotal.toFixed(2)}</td>
@@ -756,7 +658,7 @@ const SaleList = () => {
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={7} style={{ padding: '12px 8px', fontWeight: 600, textAlign: 'right' }}>
+              <td colSpan={6} style={{ padding: '12px 8px', fontWeight: 600, textAlign: 'right' }}>
                 Subtotales ({displayedRows.length} ventas)
               </td>
               <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: 600 }}>
@@ -826,18 +728,6 @@ const SaleList = () => {
                       </option>
                     ))}
                   </select>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <label>Cantidad</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={editData.quantity}
-                    onChange={handleEditFieldChange('quantity')}
-                    style={{ padding: 8 }}
-                    required
-                  />
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
