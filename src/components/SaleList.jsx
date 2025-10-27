@@ -1,6 +1,6 @@
 
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { computeSaleFinancials, normalizePayments, determinePaymentStatus, roundMoney } from '../utils/salePayments';
 import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
 
@@ -78,9 +78,9 @@ const SaleList = () => {
     });
   }, [enrichedSales, search, method, startDate, endDate]);
 
-  const [sortField, setSortField] = useState('date');
-  const [sortDirection, setSortDirection] = useState('desc');
+  const [sortState, setSortState] = useState({ column: null, direction: 'default' });
   const [pageSize, setPageSize] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
   const [editingSale, setEditingSale] = useState(null);
   const [editData, setEditData] = useState(null);
   const [initialEditData, setInitialEditData] = useState(null);
@@ -130,75 +130,234 @@ const SaleList = () => {
     return Number.isFinite(rounded) ? String(rounded) : '0';
   };
 
-  const sorted = useMemo(() => {
-    const list = [...filtered];
-    const directionFactor = sortDirection === 'desc' ? -1 : 1;
-    return list.sort((a, b) => {
-      const getName = (sale) => sale.product?.name?.toLowerCase() || '';
-      const getDate = (sale) => {
-        if (!sale.date) return 0;
-        const timestamp = new Date(sale.date).getTime();
-        return Number.isNaN(timestamp) ? 0 : timestamp;
-      };
-      const getPrice = (sale) => {
-        const value = Number(sale.unitPrice);
-        return Number.isNaN(value) ? 0 : value;
-      };
+  const handleSearchChange = (event) => {
+    const value = event.target.value;
+    setSearch(value);
+    if (value) {
+      setMethod('');
+      setStartDate('');
+      setEndDate('');
+    }
+    setCurrentPage(1);
+  };
 
-      let aValue;
-      let bValue;
+  const handleMethodChange = (event) => {
+    const value = event.target.value;
+    setMethod(value);
+    if (value) {
+      setSearch('');
+      setStartDate('');
+      setEndDate('');
+    }
+    setCurrentPage(1);
+  };
 
-      switch (sortField) {
-        case 'name':
-          aValue = getName(a);
-          bValue = getName(b);
-          break;
-        case 'price':
-          aValue = getPrice(a);
-          bValue = getPrice(b);
-          break;
-        case 'date':
-        default:
-          aValue = getDate(a);
-          bValue = getDate(b);
-          break;
+  const handleStartDateChange = (event) => {
+    const value = event.target.value;
+    setStartDate(value);
+    if (value) {
+      setSearch('');
+      setMethod('');
+    }
+    setCurrentPage(1);
+  };
+
+  const handleEndDateChange = (event) => {
+    const value = event.target.value;
+    setEndDate(value);
+    if (value) {
+      setSearch('');
+      setMethod('');
+    }
+    setCurrentPage(1);
+  };
+
+  const handlePageSizeChange = (event) => {
+    const parsed = Number(event.target.value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      setPageSize(parsed);
+    } else {
+      setPageSize(10);
+    }
+    setCurrentPage(1);
+  };
+
+  const handleColumnSort = (columnKey) => {
+    setSortState(prev => {
+      if (prev.column === columnKey) {
+        if (prev.direction === 'asc') return { column: columnKey, direction: 'desc' };
+        if (prev.direction === 'desc') return { column: null, direction: 'default' };
+        return { column: columnKey, direction: 'asc' };
+      }
+      return { column: columnKey, direction: 'asc' };
+    });
+    setCurrentPage(1);
+  };
+
+  const handleHeaderKeyDown = (event, columnKey) => {
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar' || event.key === 'Space') {
+      event.preventDefault();
+      handleColumnSort(columnKey);
+    }
+  };
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, method, startDate, endDate, pageSize]);
+
+  const getRowData = useCallback((sale) => {
+    const fin = sale.financials || computeSaleFinancials(sale);
+    const costMaterials = Number.isFinite(fin.unitCost) ? fin.unitCost : 0;
+    const estimatedGain = Number.isFinite(fin.estimatedGain) ? fin.estimatedGain : 0;
+    const costTotal = fin.computedTotal > 0 ? fin.computedTotal : fin.fallbackTotal;
+    const hasRealSale = fin.realSaleValue !== null && fin.realSaleValue !== undefined;
+    const realSaleDisplay = hasRealSale ? fin.realSaleValue : null;
+    const realSaleAmount = hasRealSale ? fin.realSaleValue : 0;
+    const realProfitValue = hasRealSale ? realSaleAmount - costMaterials : 0;
+    return {
+      sale,
+      fin,
+      costMaterials,
+      estimatedGain,
+      costTotal,
+      hasRealSale,
+      realSaleDisplay,
+      realSaleAmount,
+      realProfitDisplay: hasRealSale ? realProfitValue : null,
+      realProfitValue,
+      paymentReceived: fin.paymentReceived,
+      paymentPending: fin.paymentPending,
+      status: fin.paymentStatus
+    };
+  }, []);
+
+  const resolveSortValue = useCallback((row, columnKey) => {
+    switch (columnKey) {
+      case 'date': {
+        if (!row.sale.date) return 0;
+        const timestamp = new Date(row.sale.date).getTime();
+        return Number.isFinite(timestamp) ? timestamp : 0;
+      }
+      case 'product':
+        return row.sale.product?.name?.toLowerCase() || '';
+      case 'costMaterials':
+        return Number.isFinite(row.costMaterials) ? row.costMaterials : 0;
+      case 'estimatedGain':
+        return Number.isFinite(row.estimatedGain) ? row.estimatedGain : 0;
+      case 'costTotal':
+        return Number.isFinite(row.costTotal) ? row.costTotal : 0;
+      case 'status':
+        return row.status?.toLowerCase() || '';
+      case 'realSaleValue':
+        return Number.isFinite(row.realSaleAmount) ? row.realSaleAmount : 0;
+      case 'paymentReceived':
+        return Number.isFinite(row.paymentReceived) ? row.paymentReceived : 0;
+      case 'paymentPending':
+        return Number.isFinite(row.paymentPending) ? row.paymentPending : 0;
+      case 'realProfit':
+        return Number.isFinite(row.realProfitValue) ? row.realProfitValue : 0;
+      case 'customerName':
+        return row.sale.customerName?.toLowerCase() || '';
+      case 'paymentMethod':
+        return row.sale.paymentMethod?.toLowerCase() || '';
+      case 'paymentNotes':
+        return row.sale.paymentNotes?.toLowerCase() || '';
+      default:
+        return 0;
+    }
+  }, []);
+
+  const getSortIcon = useCallback((columnKey) => {
+    if (sortState.column !== columnKey || sortState.direction === 'default') return null;
+    return sortState.direction === 'asc' ? '↑' : '↓';
+  }, [sortState]);
+
+  const renderHeaderCell = (label, columnKey, align = 'left') => {
+    const icon = getSortIcon(columnKey);
+    const ariaSort = sortState.column === columnKey
+      ? (sortState.direction === 'asc' ? 'ascending' : 'descending')
+      : 'none';
+    return (
+      <th
+        style={{
+          textAlign: align,
+          borderBottom: '1px solid #ddd',
+          padding: '12px 8px',
+          cursor: 'pointer',
+          userSelect: 'none'
+        }}
+        onClick={() => handleColumnSort(columnKey)}
+        onKeyDown={(event) => handleHeaderKeyDown(event, columnKey)}
+        role="button"
+        tabIndex={0}
+        aria-sort={ariaSort}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          {label}
+          {icon ? <span>{icon}</span> : null}
+        </span>
+      </th>
+    );
+  };
+
+  const filteredRows = useMemo(() => filtered.map(getRowData), [filtered, getRowData]);
+
+  const sortedRows = useMemo(() => {
+    if (!sortState.column || sortState.direction === 'default') {
+      return filteredRows;
+    }
+    const directionFactor = sortState.direction === 'asc' ? 1 : -1;
+    return [...filteredRows].sort((a, b) => {
+      const aValueRaw = resolveSortValue(a, sortState.column);
+      const bValueRaw = resolveSortValue(b, sortState.column);
+
+      if (typeof aValueRaw === 'string' || typeof bValueRaw === 'string') {
+        const aValue = typeof aValueRaw === 'string' ? aValueRaw : '';
+        const bValue = typeof bValueRaw === 'string' ? bValueRaw : '';
+        const comparison = aValue.localeCompare(bValue);
+        return comparison * directionFactor;
       }
 
-      if (aValue < bValue) return -1 * directionFactor;
-      if (aValue > bValue) return 1 * directionFactor;
+      const aValueNum = Number(aValueRaw);
+      const bValueNum = Number(bValueRaw);
+      const aNumeric = Number.isFinite(aValueNum) ? aValueNum : 0;
+      const bNumeric = Number.isFinite(bValueNum) ? bValueNum : 0;
+
+      if (aNumeric < bNumeric) return -1 * directionFactor;
+      if (aNumeric > bNumeric) return 1 * directionFactor;
       return 0;
     });
-  }, [filtered, sortField, sortDirection]);
+  }, [filteredRows, sortState, resolveSortValue]);
 
-  const displayed = useMemo(() => sorted.slice(0, pageSize), [sorted, pageSize]);
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+
+  const handlePageChange = useCallback((targetPage) => {
+    if (!Number.isFinite(targetPage)) return;
+    const clamped = Math.min(Math.max(targetPage, 1), totalPages);
+    setCurrentPage(clamped);
+  }, [totalPages]);
+
+  const pageNumbers = useMemo(
+    () => Array.from({ length: totalPages }, (_, index) => index + 1),
+    [totalPages]
+  );
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const safePage = Math.min(currentPage, totalPages);
 
   const displayedRows = useMemo(() => {
-    return displayed.map(s => {
-      const fin = s.financials || computeSaleFinancials(s);
-      const costMaterials = Number.isFinite(fin.unitCost) ? fin.unitCost : 0;
-      const estimatedGain = Number.isFinite(fin.estimatedGain) ? fin.estimatedGain : 0;
-      const costTotal = fin.computedTotal > 0 ? fin.computedTotal : fin.fallbackTotal;
-      const hasRealSale = fin.realSaleValue !== null && fin.realSaleValue !== undefined;
-      const realSaleDisplay = hasRealSale ? fin.realSaleValue : null;
-      const realSaleAmount = hasRealSale ? fin.realSaleValue : 0;
-      const realProfitValue = hasRealSale ? realSaleAmount - costMaterials : 0;
-      return {
-        sale: s,
-        fin,
-        costMaterials,
-        estimatedGain,
-        costTotal,
-        hasRealSale,
-        realSaleDisplay,
-        realSaleAmount,
-        realProfitDisplay: hasRealSale ? realProfitValue : null,
-        realProfitValue,
-        paymentReceived: fin.paymentReceived,
-        paymentPending: fin.paymentPending,
-        status: fin.paymentStatus
-      };
-    });
-  }, [displayed]);
+    const startIndex = (safePage - 1) * pageSize;
+    return sortedRows.slice(startIndex, startIndex + pageSize);
+  }, [sortedRows, safePage, pageSize]);
+
+  const firstItemIndex = sortedRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const lastItemIndex = sortedRows.length === 0 ? 0 : firstItemIndex + displayedRows.length - 1;
+  const totalItems = sortedRows.length;
 
   const saleTotals = useMemo(() => {
     return displayedRows.reduce((acc, row) => {
@@ -549,10 +708,10 @@ const SaleList = () => {
           type="text"
           placeholder="Buscar por producto o cliente"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={handleSearchChange}
           style={{ padding: 8, flex: '1 1 240px' }}
         />
-        <select value={method} onChange={e => setMethod(e.target.value)} style={{ padding: 8 }}>
+        <select value={method} onChange={handleMethodChange} style={{ padding: 8 }}>
           <option value="">Todos los medios</option>
           <option>Efectivo</option>
           <option>Transferencia</option>
@@ -560,16 +719,13 @@ const SaleList = () => {
           <option>Tarjeta de Regalo</option>
           <option>Otro</option>
         </select>
-        <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ padding: 8 }} />
-        <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={{ padding: 8 }} />
-        <select value={sortField} onChange={e => setSortField(e.target.value)} style={{ padding: 8 }}>
-          <option value="date">Ordenar por fecha</option>
-          <option value="name">Ordenar por nombre</option>
-          <option value="price">Ordenar por precio</option>
-        </select>
-        <select value={sortDirection} onChange={e => setSortDirection(e.target.value)} style={{ padding: 8 }}>
-          <option value="asc">Ascendente</option>
-          <option value="desc">Descendente</option>
+        <input type="date" value={startDate} onChange={handleStartDateChange} style={{ padding: 8 }} />
+        <input type="date" value={endDate} onChange={handleEndDateChange} style={{ padding: 8 }} />
+        <select value={pageSize} onChange={handlePageSizeChange} style={{ padding: 8 }}>
+          <option value="5">5 filas</option>
+          <option value="10">10 filas</option>
+          <option value="20">20 filas</option>
+          <option value="50">50 filas</option>
         </select>
       </div>
 
@@ -585,19 +741,19 @@ const SaleList = () => {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Fecha</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Producto</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo materiales</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia estimada (confección)</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Costo total producto</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Estado</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Valor venta real</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago recibido</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Pago pendiente</th>
-              <th style={{ textAlign: 'right', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Ganancia real</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Cliente</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Medio de pago</th>
-              <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: '12px 8px' }}>Observaciones forma de pago</th>
+              {renderHeaderCell('Fecha', 'date')}
+              {renderHeaderCell('Producto', 'product')}
+              {renderHeaderCell('Costo materiales', 'costMaterials', 'right')}
+              {renderHeaderCell('Ganancia estimada (confección)', 'estimatedGain', 'right')}
+              {renderHeaderCell('Costo total producto', 'costTotal', 'right')}
+              {renderHeaderCell('Estado', 'status')}
+              {renderHeaderCell('Valor venta real', 'realSaleValue', 'right')}
+              {renderHeaderCell('Pago recibido', 'paymentReceived', 'right')}
+              {renderHeaderCell('Pago pendiente', 'paymentPending', 'right')}
+              {renderHeaderCell('Ganancia real', 'realProfit', 'right')}
+              {renderHeaderCell('Cliente', 'customerName')}
+              {renderHeaderCell('Medio de pago', 'paymentMethod')}
+              {renderHeaderCell('Observaciones forma de pago', 'paymentNotes')}
             </tr>
           </thead>
           <tbody>
@@ -681,6 +837,52 @@ const SaleList = () => {
             </tr>
           </tfoot>
         </table>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          marginTop: 16
+        }}
+      >
+        <span style={{ fontSize: 14, color: '#4b5563' }}>
+          {totalItems === 0
+            ? 'No hay ventas para mostrar'
+            : `Mostrando ${firstItemIndex} - ${lastItemIndex} de ${totalItems} ventas`}
+        </span>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => handlePageChange(safePage - 1)} disabled={safePage <= 1}>
+            Anterior
+          </button>
+
+          {pageNumbers.map(number => (
+            <button
+              key={number}
+              onClick={() => handlePageChange(number)}
+              style={{
+                minWidth: 36,
+                padding: '4px 8px',
+                borderRadius: 4,
+                border: number === safePage ? '1px solid #111827' : '1px solid #d1d5db',
+                backgroundColor: number === safePage ? '#111827' : '#fff',
+                color: number === safePage ? '#fff' : '#111827',
+                fontWeight: number === safePage ? 600 : 500
+              }}
+              aria-current={number === safePage ? 'page' : undefined}
+            >
+              {number}
+            </button>
+          ))}
+
+          <button onClick={() => handlePageChange(safePage + 1)} disabled={safePage >= totalPages}>
+            Siguiente
+          </button>
+        </div>
       </div>
 
       {editingSale && editData && (
