@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
+import { getAllProducts } from '../services/productService';
 
 const DEFAULT_SALE_QUANTITY = 1;
 
@@ -26,13 +27,8 @@ const SaleForm = ({ onSaleAdded }) => {
 
   const reloadProducts = async () => {
     try {
-      const res = await fetch('/api/products');
-      if (res.ok) {
-        const data = await res.json();
-        setProducts(data);
-      } else {
-        console.error('Error fetching products');
-      }
+      const data = await getAllProducts();
+      setProducts(data);
     } catch (error) {
       console.error('Error fetching products:', error);
     }

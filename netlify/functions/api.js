@@ -78,11 +78,16 @@ export async function handler(event) {
     const resourceId = url.searchParams.get('id') || pathSegments[1] || null;
 
     const limitParam = url.searchParams.get('limit');
+    const pageParam = url.searchParams.get('page');
     const fieldsParam = (url.searchParams.get('fields') || '').trim();
     const fields = fieldsParam
       ? fieldsParam.split(',').map(s => s.trim()).filter(Boolean)
       : null;
     const limit = Number(limitParam);
+    const page = Number(pageParam);
+    const hasLimit = Number.isFinite(limit) && limit > 0;
+    const hasPage = Number.isFinite(page) && page > 0;
+    const defaultPageSize = 25;
     let payload = null;
     try {
       payload = decodeBody(event);
@@ -117,7 +122,14 @@ export async function handler(event) {
         query = query.filter('data->>category', 'eq', url.searchParams.get('category'));
       }
 
-      if (limitParam && Number.isFinite(limit) && limit > 0) {
+      query = query.order('external_id', { ascending: true });
+
+      if (hasPage) {
+        const pageSize = hasLimit ? limit : defaultPageSize;
+        const from = (page - 1) * pageSize;
+        const to = from + pageSize - 1;
+        query = query.range(from, to);
+      } else if (hasLimit) {
         query = query.limit(limit);
       }
 

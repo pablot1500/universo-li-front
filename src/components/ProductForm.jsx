@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getAllProducts } from '../services/productService';
 
 const LOCKED_COMPOSITE_CATEGORY = 'Set / Conjuntos';
 
@@ -30,12 +31,9 @@ const ProductForm = ({ mode, initialValues = {}, onProductSubmit }) => {
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        const res = await fetch('/api/products');
-        if (res.ok) {
-          const data = await res.json();
-          const cats = Array.from(new Set(data.map(p => p.category).filter(Boolean)));
-          setCategories(cats);
-        }
+        const data = await getAllProducts();
+        const cats = Array.from(new Set(data.map(p => p.category).filter(Boolean)));
+        setCategories(cats);
       } catch (error) {
         console.error('Error fetching product categories:', error);
       }

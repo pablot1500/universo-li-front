@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { computeSaleFinancials } from '../utils/salePayments';
+import { getAllProducts } from '../services/productService';
 
 const StatsPage = () => {
   const [sales, setSales] = useState([]);
@@ -32,12 +33,12 @@ const StatsPage = () => {
       setLoading(true);
       setError(null);
       try {
-        const [resSales, resProducts] = await Promise.all([
+        const [resSales, productsData] = await Promise.all([
           fetch('/api/sales'),
-          fetch('/api/products')
+          getAllProducts()
         ]);
-        if (!resSales.ok || !resProducts.ok) throw new Error('Error cargando datos');
-        const [salesData, productsData] = await Promise.all([resSales.json(), resProducts.json()]);
+        if (!resSales.ok) throw new Error('Error cargando datos');
+        const salesData = await resSales.json();
         setSales(salesData || []);
         setProducts(productsData || []);
       } catch (err) {

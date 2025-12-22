@@ -1,16 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import ProductPriceCalc from '../components/ProductPriceCalc';
+import { getAllProducts } from '../services/productService';
 
 const ProductsPage = () => {
   const [products, setProducts] = useState([]);
   const [detailProduct, setDetailProduct] = useState(null);
 
   useEffect(() => {
-    // Fetch products data
-    fetch('/api/products')
-      .then(res => res.json())
-      .then(data => setProducts(data))
-      .catch(err => console.error(err));
+    const load = async () => {
+      try {
+        const data = await getAllProducts();
+        setProducts(data);
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    load();
   }, []);
 
   return (

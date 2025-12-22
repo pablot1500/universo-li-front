@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ProductForm from '../components/ProductForm';
 import ProductList from '../components/ProductList';
+import { getAllProducts } from '../services/productService';
 
 const DEFAULT_PRICE_ADJUSTMENTS = Object.freeze([
   { name: 'Inflación', percent: 2 },
@@ -344,11 +345,10 @@ const ProductsPage = () => {
 
   const fetchProductsCatalog = useCallback(async () => {
     try {
-      const res = await fetch('/api/products');
-      if (!res.ok) return [];
-      const data = await res.json();
-      setProductCatalog(Array.isArray(data) ? data : []);
-      return Array.isArray(data) ? data : [];
+      const data = await getAllProducts();
+      const normalized = Array.isArray(data) ? data : [];
+      setProductCatalog(normalized);
+      return normalized;
     } catch (err) {
       console.error('Error fetching products catalog:', err);
       return [];

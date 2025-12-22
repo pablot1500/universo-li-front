@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getAllProducts } from '../services/productService';
 
 const COMPOSITE_CATEGORY = 'Set / Conjuntos';
 
@@ -203,13 +204,8 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
 
   const fetchProducts = async () => {
     try {
-      const res = await fetch('/api/products');
-      if (res.ok) {
-        const data = await res.json();
-        setProducts(data);
-      } else {
-        console.error('Error fetching products');
-      }
+      const data = await getAllProducts();
+      setProducts(data);
     } catch (error) {
       console.error('Error fetching products:', error);
     }

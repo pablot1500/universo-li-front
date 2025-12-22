@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { computeSaleFinancials, normalizePayments, determinePaymentStatus, roundMoney } from '../utils/salePayments';
 import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
+import { getAllProducts } from '../services/productService';
 
 const paymentStatusColor = (status) => {
   if (status === 'Pendiente de Pago') return '#b91c1c';
@@ -25,12 +26,12 @@ const SaleList = () => {
 
   const fetchAll = async () => {
     try {
-      const [resSales, resProducts] = await Promise.all([
+      const [resSales, productsData] = await Promise.all([
         fetch('/api/sales'),
-        fetch('/api/products')
+        getAllProducts()
       ]);
       if (resSales.ok) setSales(await resSales.json());
-      if (resProducts.ok) setProducts(await resProducts.json());
+      setProducts(productsData);
     } catch (error) {
       console.error('Error fetching data:', error);
     }
