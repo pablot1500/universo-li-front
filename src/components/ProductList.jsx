@@ -2,6 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { getAllProducts } from '../services/productService';
 
 const COMPOSITE_CATEGORY = 'Set / Conjuntos';
+const normalizeKey = (value) => (value || '')
+  .toString()
+  .trim()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, '')
+  .toLowerCase();
+const isConfeccionName = (name) => normalizeKey(name).includes('confeccion');
 
 const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopyProduct, onDeleteProduct }) => {
   const [products, setProducts] = useState([]);
@@ -83,13 +91,15 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
 
     const telas = (p.componentes && Array.isArray(p.componentes.telas)) ? p.componentes.telas : [];
     const otros = (p.componentes && Array.isArray(p.componentes.otros)) ? p.componentes.otros : [];
-    const hasTela = telas.some(t => t && t.componentId);
-    const hasOtro = otros.some(o => o && o.componentId);
-    const hasAny = hasTela || hasOtro;
+    const hasAny = telas.length > 0 || otros.length > 0;
     const telasTotal = telas.reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
     // Excluye ítems marcados como confección (tagConfeccion) del subtotal de otros
     const otrosTotal = otros
-      .filter(o => !o?.tagConfeccion)
+      .filter(o => {
+        if (o?.tagConfeccion != null) return !o.tagConfeccion;
+        const nameGuess = o?.name || o?.componentName || o?.component?.name || '';
+        return !isConfeccionName(nameGuess);
+      })
       .reduce((acc, o) => acc + ((Number(o?.unidades) || 0) * (Number(o?.precioUnitario) || 0)), 0);
     const base = hasAny
       ? (telasTotal + otrosTotal)
@@ -100,26 +110,25 @@ const ProductList = ({ viewMode = 'grid', onSelectProduct, onEditProduct, onCopy
 
     // Aplica el ajuste porcentual de "inflación" cuando esté definido en el producto
     const adjustments = Array.isArray(p.priceAdjustments) ? p.priceAdjustments : [];
-    const inflationRow = adjustments.find(row => {
-      const name = typeof row?.name === 'string' ? row.name : '';
-      let normalized = name;
-      if (typeof normalized.normalize === 'function') {
-        normalized = normalized.normalize('NFD');
+    const inflationRow = adjustments.find(row => normalizeKey(row?.name) === 'inflacion');
+    let inflationPercent = null;
+    if (inflationRow && Number.isFinite(Number(inflationRow.percent))) {
+      inflationPercent = Number(inflationRow.percent);
+    } else {
+      const modifiers = (p?.pricing && p.pricing.modificadores) || p?.modificadores;
+      if (modifiers && typeof modifiers === 'object') {
+        const found = Object.entries(modifiers).find(([name]) => normalizeKey(name) === 'inflacion');
+        if (found) {
+          const frac = Number(found[1]);
+          if (Number.isFinite(frac)) inflationPercent = frac * 100;
+        }
       }
-      normalized = normalized
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase()
-        .trim();
-      return normalized === 'inflacion' || normalized === 'inflación';
-    });
+    }
 
     let totalConConfeccion = totalConConfeccionBase;
-    if (inflationRow) {
-      const percent = Number(inflationRow.percent);
-      if (!Number.isNaN(percent)) {
-        const multiplier = 1 + percent / 100;
-        totalConConfeccion = Math.round(totalConConfeccionBase * multiplier * 100) / 100;
-      }
+    if (Number.isFinite(inflationPercent)) {
+      const multiplier = 1 + inflationPercent / 100;
+      totalConConfeccion = Math.round(totalConConfeccionBase * multiplier * 100) / 100;
     }
 
     const result = { hasAny, total, totalConConfeccion, totalConConfeccionBase };
