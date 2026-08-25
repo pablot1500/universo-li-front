@@ -1,3 +1,3 @@
-exports.handler = async () => {
+export const handler = async () => {
   return { statusCode: 200, body: JSON.stringify({ ok:true, now: new Date().toISOString() }) };
 };
