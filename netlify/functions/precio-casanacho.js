@@ -1,5 +1,5 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
+import { getCasanachoPrice } from './_shared/casanacho-price.js';
+import { isAuthorizedEvent, unauthorizedResponse } from './_shared/auth.js';
 
 const defaultHeaders = {
   'Content-Type': 'application/json',
@@ -21,33 +21,28 @@ export async function handler(event) {
     return { statusCode: 204, headers: defaultHeaders };
   }
 
+  if (!isAuthorizedEvent(event)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const url = event.queryStringParameters?.url || new URL(event.rawUrl).searchParams.get('url');
     if (!url) {
       return jsonResponse(400, { error: 'Missing "url" query parameter' });
     }
-
-    const response = await axios.get(url, {
-      headers: {
-        // set a basic user-agent to avoid being blocked
-        'User-Agent': 'Mozilla/5.0 (compatible; UniversoLI/1.0; +https://universoli.netlify.app)'
-      },
-      timeout: 15000
+    const result = await getCasanachoPrice(url);
+    if (result.ok) {
+      return jsonResponse(200, {
+        price: result.price,
+        cached: result.cached === true,
+        stale: result.stale === true
+      });
+    }
+    return jsonResponse(result.status || 500, {
+      error: result.error || 'Unable to fetch price',
+      detail: result.detail,
+      retryAfterMs: result.retryAfterMs
     });
-
-    const $ = cheerio.load(response.data);
-    const priceString = $('#price_display').attr('data-product-price');
-    if (!priceString) {
-      return jsonResponse(404, { error: 'Price not found in HTML' });
-    }
-
-    const numeric = parseFloat(priceString);
-    if (Number.isNaN(numeric)) {
-      return jsonResponse(500, { error: 'Price value is not numeric' });
-    }
-
-    const price = numeric / 100;
-    return jsonResponse(200, { price });
   } catch (err) {
     console.error('Error scraping Casanacho price:', err);
     return jsonResponse(500, { error: 'Unable to fetch price', detail: err.message || String(err) });

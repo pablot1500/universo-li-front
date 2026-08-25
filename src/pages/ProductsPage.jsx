@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ProductForm from '../components/ProductForm';
 import ProductList from '../components/ProductList';
-import { getAllProducts } from '../services/productService';
+import { getAllProducts, getProductById } from '../services/productService';
+import { fetchCasanachoPrice, sleep } from '../utils/casanachoScraper';
+import { calculateProductTotals } from '../utils/productPricing';
 
 const DEFAULT_PRICE_ADJUSTMENTS = Object.freeze([
   { name: 'Inflación', percent: 2 },
@@ -141,6 +143,27 @@ const isConfeccionName = (name) => norm(name).includes('confeccion');
 const cloneDetailProduct = (product) => (product ? JSON.parse(JSON.stringify(product)) : null);
 
 const COMPOSITE_CATEGORY = 'Set / Conjuntos';
+const SCRAPER_BATCH_DELAY_MS = 1800;
+const buildManualPriceSyncSuccess = (component, price, meta = {}) => ({
+  ...component,
+  price,
+  autoPriceFailed: false,
+  lastPriceSyncAt: new Date().toISOString(),
+  lastPriceSyncStatus: meta.stale === true ? 'stale' : 'success',
+  lastPriceSyncSource: 'manual',
+  lastPriceSyncError: null,
+  lastPriceSyncCached: meta.cached === true,
+  lastPriceSyncStale: meta.stale === true
+});
+
+const buildManualPriceSyncError = (component, errorMessage) => ({
+  ...component,
+  autoPriceFailed: true,
+  lastPriceSyncAt: new Date().toISOString(),
+  lastPriceSyncStatus: 'error',
+  lastPriceSyncSource: 'manual',
+  lastPriceSyncError: errorMessage
+});
 
 const ProductsPage = () => {
   const [refresh, setRefresh] = useState(0);
@@ -216,29 +239,19 @@ const ProductsPage = () => {
 
   const computeReferencedProductTotals = useCallback((refProduct) => {
     if (!refProduct) {
-      return { subtotal: 0, totalConConfeccion: 0 };
+      return { subtotal: 0, confeccionTotal: 0, totalConConfeccion: 0 };
     }
-    const telasSubtotal = (refProduct.componentes?.telas || [])
-      .reduce((acc, t) => acc + (Number(t?.costoMaterial) || 0), 0);
-    const otrosRowsRef = (refProduct.componentes?.otros || []).map(o => {
-      const unidades = Number(o?.unidades) || 0;
-      const precioUnitario = Number(o?.precioUnitario) || 0;
-      const total = unidades * precioUnitario;
-      const explicitTag = o?.tagConfeccion;
-      const componentName = otherById[o?.componentId]?.name;
-      const inferredTag = explicitTag != null ? Boolean(explicitTag) : isConfeccionName(componentName);
-      return { total, isConf: inferredTag };
+    const totals = calculateProductTotals(refProduct, {
+      productById,
+      telaById,
+      otherById
     });
-    const otrosNoConf = otrosRowsRef.filter(r => !r.isConf).reduce((acc, row) => acc + row.total, 0);
-    const otrosConf = otrosRowsRef.filter(r => r.isConf).reduce((acc, row) => acc + row.total, 0);
-    const hasConf = otrosRowsRef.some(r => r.isConf);
-    const subtotal = round2(telasSubtotal + otrosNoConf);
-    const confeccionValue = hasConf
-      ? round2(otrosConf)
-      : round2(Number(refProduct?.costoConfeccion) || 0);
-    const totalConConfeccion = round2(subtotal + confeccionValue);
-    return { subtotal, totalConConfeccion };
-  }, [otherById]);
+    return {
+      subtotal: totals.total,
+      confeccionTotal: totals.confeccionTotal,
+      totalConConfeccion: totals.totalConConfeccionBase
+    };
+  }, [otherById, productById, telaById]);
 
   // Selector de componentes (popup)
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -587,6 +600,21 @@ const ProductsPage = () => {
     bottom: '90px',
     transition: 'opacity 0.25s ease, transform 0.25s ease'
   };
+  const adjustmentCellStyle = {
+    border: '1px solid #ccc',
+    padding: '6px',
+    boxSizing: 'border-box'
+  };
+  const adjustmentInputStyle = {
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    display: 'block'
+  };
+  const adjustmentMoneyInputStyle = {
+    ...adjustmentInputStyle,
+    textAlign: 'right'
+  };
 
   const handleOpenAdd = () => {
     setModalMode('add');
@@ -594,17 +622,29 @@ const ProductsPage = () => {
     setPendingProductType(null);
     setShowTypeModal(true);
   };
-  const handleEditProduct = (product) => {
+  const hydrateProductDetail = async (product) => {
+    if (!product?.id) return product;
+    try {
+      return await getProductById(product.id);
+    } catch (error) {
+      console.error('Error obteniendo producto completo:', error);
+      return product;
+    }
+  };
+
+  const handleEditProduct = async (product) => {
     setModalMode('edit');
-    const normalized = product ? { ...product, type: product.type || 'simple' } : product;
+    const fullProduct = await hydrateProductDetail(product);
+    const normalized = fullProduct ? { ...fullProduct, type: fullProduct.type || 'simple' } : fullProduct;
     setSelectedProduct(normalized);
     setShowTypeModal(false);
     setPendingProductType(null);
     setShowModal(true);
   };
-  const handleCopyProduct = (product) => {
+  const handleCopyProduct = async (product) => {
     setModalMode('copy');
-    const normalized = product ? { ...product, type: product.type || 'simple' } : product;
+    const fullProduct = await hydrateProductDetail(product);
+    const normalized = fullProduct ? { ...fullProduct, type: fullProduct.type || 'simple' } : fullProduct;
     setSelectedProduct(normalized);
     setShowTypeModal(false);
     setPendingProductType(null);
@@ -1546,20 +1586,20 @@ const ProductsPage = () => {
       activeControllersRef.current.save = saveController;
 
       try {
-        const res = await fetch(
-          `${scraperEndpoint}?url=${encodeURIComponent(component.link)}`,
+        if (i > 0) {
+          await sleep(SCRAPER_BATCH_DELAY_MS, priceController.signal);
+        }
+        const { price: newPrice, meta } = await fetchCasanachoPrice(
+          scraperEndpoint,
+          component.link,
           { signal: priceController.signal }
         );
-        const data = await res.json();
-        if (!res.ok) throw new Error('Respuesta no OK del scraper');
-
-        const newPrice = data.price;
         const saveRes = await fetch(
           `${apiBase}/components/${component.id}`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...component, price: newPrice, autoPriceFailed: false }),
+            body: JSON.stringify(buildManualPriceSyncSuccess(component, newPrice, meta)),
             signal: saveController.signal
           }
         );
@@ -1576,7 +1616,7 @@ const ProductsPage = () => {
           error: null
         });
       } catch (error) {
-        console.error(`Error autocompletando precio para ${component?.name}:`, error);
+        console.error(`Error autocompletando precio para ${component?.name} (${component?.id}) [${component?.link}]:`, error);
         const errorMessage = String(error?.message || error);
         setProgressItems(prev => prev.map((p, idx) => idx === i ? { ...p, status: 'error', error: errorMessage } : p));
         localResults.push({
@@ -1596,7 +1636,7 @@ const ProductsPage = () => {
               {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ...component, autoPriceFailed: true })
+                body: JSON.stringify(buildManualPriceSyncError(component, errorMessage))
               }
             );
           } catch (flagError) {
@@ -1641,6 +1681,7 @@ const ProductsPage = () => {
           item,
           product: refProduct || null,
           subtotal: totals.subtotal,
+          confeccionTotal: totals.confeccionTotal,
           totalConConfeccion: totals.totalConConfeccion
         };
       })
@@ -1651,6 +1692,12 @@ const ProductsPage = () => {
   const compositeTotalConConfeccion = isCompositeProduct
     ? round2(compositeBreakdown.reduce((acc, row) => acc + (row.totalConConfeccion || 0), 0))
     : 0;
+  const compositeConfeccionTotal = isCompositeProduct
+    ? round2(compositeBreakdown.reduce((acc, row) => acc + (row.confeccionTotal || 0), 0))
+    : 0;
+  const compositePricingTotals = isCompositeProduct
+    ? calculateProductTotals(detailProduct, { productById, telaById, otherById })
+    : null;
 
   const telasTotal = isCompositeProduct
     ? 0
@@ -1687,11 +1734,14 @@ const ProductsPage = () => {
 
   const productoTotal = isCompositeProduct ? compositeSubtotal : simpleProductoTotal;
   const costoConfeccionEffective = isCompositeProduct
-    ? round2(Math.max(0, compositeTotalConConfeccion - compositeSubtotal))
+    ? compositeConfeccionTotal
     : simpleCostoConfeccion;
   const totalConConfeccion = isCompositeProduct
     ? compositeTotalConConfeccion
     : simpleTotalConConfeccion;
+  const publishedCompositePrice = isCompositeProduct
+    ? (compositePricingTotals?.totalConConfeccion || totalConConfeccion)
+    : 0;
 
   // Ajustes porcentuales por producto (persistentes)
   const addAdjustment = () => {
@@ -1725,6 +1775,9 @@ const ProductsPage = () => {
       <ProductList
         key={refresh}
         viewMode={'rows'}
+        catalogProducts={productCatalog}
+        telaComponents={telaComponents}
+        otherComponents={otherComponents}
         onSelectProduct={handleSelectProduct}
         onEditProduct={handleEditProduct}
         onCopyProduct={handleCopyProduct}
@@ -1964,7 +2017,7 @@ const ProductsPage = () => {
                           <thead>
                             <tr>
                               <th style={{ border: '1px solid #ccc', padding: '8px' }}>Producto</th>
-                              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right', width: '220px' }}>Precio producto</th>
+                              <th style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right', width: '220px' }}>Total base del producto</th>
                               <th style={{ border: '1px solid #ccc', padding: '8px', width: '120px' }}>Acciones</th>
                             </tr>
                           </thead>
@@ -1973,7 +2026,7 @@ const ProductsPage = () => {
                               detailProduct.compositeItems.map((item, idx) => {
                                 const breakdown = compositeBreakdown[idx] || {};
                                 const selected = breakdown.product;
-                                const priceValue = breakdown.totalConConfeccion || 0;
+                                const basePriceValue = breakdown.totalConConfeccion || 0;
                                 return (
                                   <tr key={`composite-item-${idx}`}>
                                     <td style={{ border: '1px solid #ccc', padding: '8px' }}>
@@ -1990,7 +2043,7 @@ const ProductsPage = () => {
                                       </div>
                                     </td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'right' }}>
-                                      {selected ? `$ ${fmt2(priceValue)}` : '—'}
+                                      {selected ? `$ ${fmt2(basePriceValue)}` : '—'}
                                     </td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'center' }}>
                                       <button onClick={() => removeCompositeItem(idx)}>- Eliminar</button>
@@ -2569,17 +2622,26 @@ const ProductsPage = () => {
                   {isCompositeProduct ? (
                     <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
                       <div style={{ flex: '1 1 260px' }}>
-                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total productos seleccionados</label>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Subtotal de materiales seleccionados</label>
                         <input type="text" value={`$ ${fmt2(productoTotal)}`} disabled style={{ width: '100%' }} />
                       </div>
                       <div style={{ flex: '1 1 260px' }}>
-                        <label style={{ display: 'block', fontWeight: 'bold' }}>Ajuste confección acumulado</label>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Confección acumulada</label>
                         <input type="text" value={`$ ${fmt2(costoConfeccionEffective)}`} disabled style={{ width: '100%' }} />
                       </div>
                       <div style={{ flex: '1 1 260px' }}>
-                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total set (productos + confección)</label>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>Total base del set</label>
                         <input type="text" value={`$ ${fmt2(totalConConfeccion)}`} disabled style={{ width: '100%' }} />
                       </div>
+                      <div style={{ flex: '1 1 260px' }}>
+                        <label style={{ display: 'block', fontWeight: 'bold' }}>
+                          Precio publicado{Number.isFinite(compositePricingTotals?.inflationPercent) ? ` (Inflación ${fmt2(compositePricingTotals.inflationPercent)}%)` : ''}
+                        </label>
+                        <input type="text" value={`$ ${fmt2(publishedCompositePrice)}`} disabled style={{ width: '100%' }} />
+                      </div>
+                      <p style={{ flexBasis: '100%', margin: 0, color: '#666', fontSize: 13 }}>
+                        El precio publicado aplica el ajuste de Inflación del conjunto sobre el total base.
+                      </p>
                     </div>
                   ) : (
                     <div style={{ width: '100%', marginBottom: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
@@ -2634,21 +2696,21 @@ const ProductsPage = () => {
                         const correctedWithConfeccion = round2(totalConConfeccion * multiplier);
                         return (
                           <tr key={`adj-${idx}`}>
-                            <td style={{ border: '1px solid #ccc', padding: '6px' }}>
-                              <input type="text" value={row.name} onChange={e => updateAdjustment(idx, 'name', e.target.value)} style={{ width: '100%' }} />
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right' }}>
-                              <input type="number" step="0.01" value={row.percent} onChange={e => updateAdjustment(idx, 'percent', e.target.valueAsNumber)} />
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right' }}>
-                              <input type="text" value={`$ ${fmt2(corrected)}`} disabled />
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '6px', textAlign: 'right' }}>
-                              <input type="text" value={`$ ${fmt2(correctedWithConfeccion)}`} disabled />
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '6px' }}>
-                              <button onClick={() => removeAdjustment(idx)}>- Eliminar</button>
-                            </td>
+	                            <td style={adjustmentCellStyle}>
+	                              <input type="text" value={row.name} onChange={e => updateAdjustment(idx, 'name', e.target.value)} style={adjustmentInputStyle} />
+	                            </td>
+	                            <td style={{ ...adjustmentCellStyle, textAlign: 'right' }}>
+	                              <input type="number" step="0.01" value={row.percent} onChange={e => updateAdjustment(idx, 'percent', e.target.valueAsNumber)} style={adjustmentMoneyInputStyle} />
+	                            </td>
+	                            <td style={{ ...adjustmentCellStyle, textAlign: 'right' }}>
+	                              <input type="text" value={`$ ${fmt2(corrected)}`} disabled style={adjustmentMoneyInputStyle} />
+	                            </td>
+	                            <td style={{ ...adjustmentCellStyle, textAlign: 'right' }}>
+	                              <input type="text" value={`$ ${fmt2(correctedWithConfeccion)}`} disabled style={adjustmentMoneyInputStyle} />
+	                            </td>
+	                            <td style={adjustmentCellStyle}>
+	                              <button onClick={() => removeAdjustment(idx)}>- Eliminar</button>
+	                            </td>
                           </tr>
                         );
                       })}

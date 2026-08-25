@@ -7,8 +7,38 @@
   node_bundler = "esbuild"
 
 [[redirects]]
+  from = "/api/auth/login"
+  to = "/.netlify/functions/auth-login"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/me"
+  to = "/.netlify/functions/auth-me"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/logout"
+  to = "/.netlify/functions/auth-logout"
+  status = 200
+
+[[redirects]]
   from = "/api/precio-casanacho"
   to = "/.netlify/functions/precio-casanacho"
+  status = 200
+
+[[redirects]]
+  from = "/api/casanacho-nightly-sync/status"
+  to = "/.netlify/functions/casanacho-nightly-sync-status"
+  status = 200
+
+[[redirects]]
+  from = "/api/casanacho-nightly-sync/trigger"
+  to = "/.netlify/functions/casanacho-nightly-sync-trigger"
+  status = 200
+
+[[redirects]]
+  from = "/api/casanacho-nightly-sync/cancel"
+  to = "/.netlify/functions/casanacho-nightly-sync-cancel"
   status = 200
 
 [[redirects]]

@@ -37,6 +37,59 @@ const ComponentList = ({
     );
   };
 
+  const formatLastSync = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString('es-AR', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const renderLastSyncInfo = (component) => {
+    const formatted = formatLastSync(component?.lastPriceSyncAt);
+    const source = component?.lastPriceSyncSource === 'nightly'
+      ? 'nocturna'
+      : component?.lastPriceSyncSource === 'manual'
+        ? 'manual'
+        : null;
+    const status = component?.lastPriceSyncStatus === 'error'
+      ? 'error'
+      : component?.lastPriceSyncStatus === 'stale'
+        ? 'stale'
+        : component?.lastPriceSyncStatus === 'success'
+          ? 'ok'
+          : null;
+
+    if (!formatted) {
+      return (
+        <p style={{ fontSize: 12, color: '#777' }}>
+          Última actualización de precio: sin registros
+        </p>
+      );
+    }
+
+    const parts = [formatted];
+    if (source) parts.push(source);
+    if (status === 'ok') parts.push('OK');
+    if (status === 'error') parts.push('con error');
+    if (status === 'stale' || component?.lastPriceSyncStale) parts.push('cache vieja');
+    else if (component?.lastPriceSyncCached) parts.push('cache');
+
+    return (
+      <p
+        style={{ fontSize: 12, color: status === 'error' ? '#b00020' : status === 'stale' ? '#8a5a00' : '#666' }}
+        title={component?.lastPriceSyncError || ''}
+      >
+        Última actualización de precio: {parts.join(' · ')}
+      </p>
+    );
+  };
+
   // Estado para comentarios por categoría
   const [showComments, setShowComments] = useState(false);
   const [activeCategory, setActiveCategory] = useState('');
@@ -276,12 +329,69 @@ const ComponentList = ({
     return next;
   });
 
+  const [expandedCategories, setExpandedCategories] = useState(() => new Set());
+  const isCategoryExpanded = (category) => expandedCategories.has(category);
+  const toggleCategoryExpanded = (category) => setExpandedCategories(prev => {
+    const next = new Set(prev);
+    if (next.has(category)) next.delete(category); else next.add(category);
+    return next;
+  });
+
   const collapseStyle = (open) => ({
     overflow: 'hidden',
     maxHeight: open ? 1000 : 0,
     opacity: open ? 1 : 0,
     transition: 'max-height 220ms ease, opacity 220ms ease'
   });
+
+  const categoryCollapseStyle = (open) => ({
+    overflow: 'hidden',
+    maxHeight: open ? 100000 : 0,
+    opacity: open ? 1 : 0,
+    transition: 'max-height 260ms ease, opacity 220ms ease'
+  });
+
+  const categoryTitle = (category, count) => (
+    <>
+      {category} <span style={{ fontSize: 14, color: '#666' }}>({count})</span>
+    </>
+  );
+
+  const categoryArrow = (category) => (
+    <span style={{ fontSize: 14, color: '#666' }}>{isCategoryExpanded(category) ? '▲' : '▼'}</span>
+  );
+
+  const categoryHeaderStyle = (margin = '12px 0', padding = '8px 12px') => ({
+    margin,
+    padding,
+    background: '#fff2f7',
+    border: '1px solid #f8cfe1',
+    borderRadius: 6,
+    display: 'flex',
+    alignItems: isMobile ? 'stretch' : 'center',
+    justifyContent: 'space-between',
+    gap: isMobile ? 10 : 12,
+    cursor: 'pointer',
+    flexDirection: isMobile ? 'column' : 'row',
+    boxSizing: 'border-box',
+    overflow: 'hidden'
+  });
+
+  const categoryHeadingStyle = {
+    margin: 0,
+    minWidth: 0,
+    overflowWrap: 'anywhere',
+    wordBreak: 'break-word',
+    lineHeight: 1.15
+  };
+
+  const categoryHeaderActionsStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    alignSelf: isMobile ? 'flex-end' : 'center',
+    maxWidth: '100%'
+  };
 
   // Render tarjeta completa de componente (reuso en vista por filas)
   const renderComponentCard = (component) => {
@@ -309,6 +419,7 @@ const ComponentList = ({
         <p>Categoría: {component.category}</p>
         <p>{availableLabel}: {availableValue}</p>
         <p>Valor total: ${totalValue}</p>
+        {renderLastSyncInfo(component)}
         <p>
           Link Casanacho: {component.link ? (
             visibleLinks && visibleLinks[component.id] ? (
@@ -375,28 +486,89 @@ const ComponentList = ({
             }, {})
           )
           .sort(([a],[b]) => a.localeCompare(b))
-          .map(([category, comps]) => (
+          .map(([category, comps]) => {
+            const categoryOpen = isCategoryExpanded(category);
+            return (
             <div key={category} style={{ marginBottom: 16 }}>
-              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <h2 style={{ margin: 0 }}>{category}</h2>
-                <button
-                  type="button"
-                  onClick={() => openRename(category, comps)}
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    border: '1px solid #f8cfe1',
-                    background: '#fce1ef',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Renombrar categoría
-                </button>
+              <div
+                style={categoryHeaderStyle()}
+                onClick={() => toggleCategoryExpanded(category)}
+              >
+                <h2 style={categoryHeadingStyle}>{categoryTitle(category, comps.length)}</h2>
+                <div style={categoryHeaderActionsStyle}>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: '1px solid #f8cfe1',
+                      background: '#fce1ef',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Renombrar categoría
+                  </button>
+                  {categoryArrow(category)}
+                </div>
               </div>
-              {comps
-                .slice()
-                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
-                .map(component => (
+              <div style={categoryCollapseStyle(categoryOpen)}>
+                {comps
+                  .slice()
+                  .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                  .map(component => (
+                    <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
+                        <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {renderWarningIcon(component)}
+                          {cap(component.name)}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
+                      </div>
+                      <div style={collapseStyle(isExpanded(component.id))}>
+                        {renderComponentCard(component)}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+            );
+          })
+        ) : (
+          Object.entries(
+            filtered.reduce((acc, comp) => {
+              const category = comp.category || 'Sin categoría';
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(comp);
+              return acc;
+            }, {})
+          )
+          .sort(([a],[b]) => a.localeCompare(b))
+          .map(([category, comps]) => {
+            const categoryOpen = isCategoryExpanded(category);
+            return (
+            <div key={category} style={{ marginBottom: 16 }}>
+              <div
+                style={categoryHeaderStyle()}
+                onClick={() => toggleCategoryExpanded(category)}
+              >
+                <h2 style={categoryHeadingStyle}>{categoryTitle(category, comps.length)}</h2>
+                <div style={categoryHeaderActionsStyle}>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                  >
+                    Renombrar categoría
+                  </button>
+                  {categoryArrow(category)}
+                </div>
+              </div>
+              <div style={categoryCollapseStyle(categoryOpen)}>
+                {comps
+                  .slice()
+                  .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+                  .map(component => (
                   <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
                       <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -410,49 +582,10 @@ const ComponentList = ({
                     </div>
                   </div>
                 ))}
-            </div>
-          ))
-        ) : (
-          Object.entries(
-            filtered.reduce((acc, comp) => {
-              const category = comp.category || 'Sin categoría';
-              if (!acc[category]) acc[category] = [];
-              acc[category].push(comp);
-              return acc;
-            }, {})
-          )
-          .sort(([a],[b]) => a.localeCompare(b))
-          .map(([category, comps]) => (
-            <div key={category} style={{ marginBottom: 16 }}>
-              <div style={{ margin: '12px 0', padding: '8px 12px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <h2 style={{ margin: 0 }}>{category}</h2>
-                <button
-                  type="button"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
-                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
-                >
-                  Renombrar categoría
-                </button>
               </div>
-              {comps
-                .slice()
-                .sort((a,b) => (a.name||'').localeCompare(b.name||''))
-                .map(component => (
-                <div key={component.id} style={{ borderBottom: '1px solid #eee', padding: '10px 4px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => toggleExpanded(component.id)}>
-                    <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {renderWarningIcon(component)}
-                      {cap(component.name)}
-                    </div>
-                    <div style={{ fontSize: 12, color: '#666' }}>{isExpanded(component.id) ? '▲' : '▼'}</div>
-                  </div>
-                  <div style={collapseStyle(isExpanded(component.id))}>
-                    {renderComponentCard(component)}
-                  </div>
-                </div>
-              ))}
             </div>
-          ))
+            );
+          })
         )}
         {renderRenameModal()}
       </div>
@@ -500,6 +633,7 @@ const ComponentList = ({
                   <p>Categoría: {component.category}</p>
                   <p>{availableLabel}: {availableValue}</p>
                   <p>Valor total: ${totalValue}</p>
+                  {renderLastSyncInfo(component)}
                   <p>
                     Link Casanacho: {component.link ? (
                       visibleLinks && visibleLinks[component.id] ? (
@@ -557,20 +691,28 @@ const ComponentList = ({
               }, {})
             )
               .sort(([a], [b]) => a.localeCompare(b))
-              .map(([category, comps]) => (
+              .map(([category, comps]) => {
+                const categoryOpen = isCategoryExpanded(category);
+                return (
                 <div key={category} style={{ marginBottom: '32px' }}>
                   <hr />
                   {isMobile ? (
                     <>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '16px 0', padding: '6px 10px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>
-                        <h2 style={{ margin: 0 }}>{category}</h2>
-                        <button
-                          type="button"
-                          onClick={() => openRename(category, comps)}
-                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
-                        >
-                          Renombrar categoría
-                        </button>
+                      <div
+                        style={categoryHeaderStyle('16px 0', '6px 10px')}
+                        onClick={() => toggleCategoryExpanded(category)}
+                      >
+                        <h2 style={categoryHeadingStyle}>{categoryTitle(category, comps.length)}</h2>
+                        <div style={categoryHeaderActionsStyle}>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
+                            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
+                          >
+                            Renombrar categoría
+                          </button>
+                          {categoryArrow(category)}
+                        </div>
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                         <button onClick={() => openComments(category, comps)}>Ver comentarios</button>
@@ -583,104 +725,112 @@ const ComponentList = ({
                       </div>
                     </>
                   ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '16px 0', padding: '6px 10px', background: '#fff2f7', border: '1px solid #f8cfe1', borderRadius: 6 }}>
-                      <h2 style={{ margin: 0 }}>{category}</h2>
+                    <div
+                      style={categoryHeaderStyle('16px 0', '6px 10px')}
+                      onClick={() => toggleCategoryExpanded(category)}
+                    >
+                      <h2 style={categoryHeadingStyle}>{categoryTitle(category, comps.length)}</h2>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <button
                           type="button"
-                          onClick={() => openRename(category, comps)}
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); openRename(category, comps); }}
                           style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f8cfe1', background: '#fce1ef', cursor: 'pointer' }}
                         >
                           Renombrar categoría
                         </button>
-                        <button onClick={() => openComments(category, comps)}>Ver comentarios</button>
+                        <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); openComments(category, comps); }}>Ver comentarios</button>
                         <button
-                          onClick={() => onBulkCategoryUpdate && onBulkCategoryUpdate(category)}
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onBulkCategoryUpdate && onBulkCategoryUpdate(category); }}
                           title="Actualizar precios de esta categoría"
                         >
                           Actualizar precios
                         </button>
+                        {categoryArrow(category)}
                       </div>
                     </div>
                   )}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-                    {comps.map(component => {
-                      const { label: availableLabel, value: availableValue } = getAvailableInfo(component);
-                      const divisor = Number(component?.unitDivisor) > 0 ? Number(component.unitDivisor) : 1;
-                      const priceNumber = Number(component?.price);
-                      const availableNumber = Number(component?.available);
-                      const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
-                      const effectivePrice = Number.isFinite(priceNumber) ? (priceNumber / (divisor || 1)) : NaN;
-                      const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
-                      const totalValue = (Number.isFinite(priceNumber) && Number.isFinite(availableNumber))
-                        ? (priceNumber * availableNumber).toFixed(2)
-                        : '0.00';
-                      return (
-                        <div key={component.id} className="card" style={{ width: '48%', marginBottom: '16px' }}>
-                          <h3 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            {renderWarningIcon(component)}
-                            {cap(component.name)}
-                          </h3>
-                          <p>
-                            {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
-                            <br/>
-                            Divisor: x{divisor} — Precio efectivo: ${effectiveFormatted}
-                          </p>
-                          <p>Categoría: {component.category}</p>
-                          <p>{availableLabel}: {availableValue}</p>
-                          <p>Valor total: ${totalValue}</p>
-                          <p>
-                            Link Casanacho: {component.link ? (
-                              visibleLinks && visibleLinks[component.id] ? (
-                                <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
-                              ) : (
-                                <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
-                              )
-                            ) : <span style={{ color: '#aaa' }}>No seleccionado / no disponible</span>}
-                          </p>
-                          <button
-                            className="card-button"
-                            style={{ marginRight: '8px' }}
-                            onClick={() => onEditComponent(component)}
-                          >
-                            Editar
-                          </button>
-                          <button
-                            className="card-button"
-                            style={{ marginRight: '8px' }}
-                            onClick={() => onCopyComponent(component)}
-                          >
-                            Copiar
-                          </button>
-                          <button
-                            className="card-button"
-                            style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
-                            onClick={() => onAutocompletePrice(component)}
-                            disabled={!component.link}
-                            title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
-                          >
-                            Autocompletar Precio
-                          </button>
-                          <button
-                            className="card-button"
-                            onClick={() => onDeleteComponent(component)}
-                          >
-                            Eliminar
-                          </button>
-                        </div>
-                      );
-                    })}
+                  <div style={categoryCollapseStyle(categoryOpen)}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
+                      {comps.map(component => {
+                        const { label: availableLabel, value: availableValue } = getAvailableInfo(component);
+                        const divisor = Number(component?.unitDivisor) > 0 ? Number(component.unitDivisor) : 1;
+                        const priceNumber = Number(component?.price);
+                        const availableNumber = Number(component?.available);
+                        const priceFormatted = Number.isFinite(priceNumber) ? priceNumber.toFixed(2) : '0.00';
+                        const effectivePrice = Number.isFinite(priceNumber) ? (priceNumber / (divisor || 1)) : NaN;
+                        const effectiveFormatted = Number.isFinite(effectivePrice) ? effectivePrice.toFixed(2) : '0.00';
+                        const totalValue = (Number.isFinite(priceNumber) && Number.isFinite(availableNumber))
+                          ? (priceNumber * availableNumber).toFixed(2)
+                          : '0.00';
+                        return (
+                          <div key={component.id} className="card" style={{ width: '48%', marginBottom: '16px' }}>
+                            <h3 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {renderWarningIcon(component)}
+                              {cap(component.name)}
+                            </h3>
+                            <p>
+                              {component.category && component.category.toLowerCase() === 'telas' ? 'Precio por Metro' : 'Precio unitario'}: ${priceFormatted}
+                              <br/>
+                              Divisor: x{divisor} — Precio efectivo: ${effectiveFormatted}
+                            </p>
+                            <p>Categoría: {component.category}</p>
+                            <p>{availableLabel}: {availableValue}</p>
+                            <p>Valor total: ${totalValue}</p>
+                            {renderLastSyncInfo(component)}
+                            <p>
+                              Link Casanacho: {component.link ? (
+                                visibleLinks && visibleLinks[component.id] ? (
+                                  <a href={component.link} target="_blank" rel="noopener noreferrer">{component.link}</a>
+                                ) : (
+                                  <button onClick={() => toggleLinkVisibility && toggleLinkVisibility(component.id)}>Ver link</button>
+                                )
+                              ) : <span style={{ color: '#aaa' }}>No seleccionado / no disponible</span>}
+                            </p>
+                            <button
+                              className="card-button"
+                              style={{ marginRight: '8px' }}
+                              onClick={() => onEditComponent(component)}
+                            >
+                              Editar
+                            </button>
+                            <button
+                              className="card-button"
+                              style={{ marginRight: '8px' }}
+                              onClick={() => onCopyComponent(component)}
+                            >
+                              Copiar
+                            </button>
+                            <button
+                              className="card-button"
+                              style={{ marginRight: '8px', opacity: component.link ? 1 : 0.5, cursor: component.link ? 'pointer' : 'not-allowed' }}
+                              onClick={() => onAutocompletePrice(component)}
+                              disabled={!component.link}
+                              title={component.link ? 'Autocompletar Precio' : 'Asigná un link de Casanacho para habilitar'}
+                            >
+                              Autocompletar Precio
+                            </button>
+                            <button
+                              className="card-button"
+                              onClick={() => onDeleteComponent(component)}
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p style={{ fontWeight: 'bold', marginTop: '8px' }}>
+                      Total comprado para categoría {category}: ${comps.reduce((sum, c) => {
+                        const price = Number(c?.price);
+                        const available = Number(c?.available);
+                        if (!Number.isFinite(price) || !Number.isFinite(available)) return sum;
+                        return sum + (price * available);
+                      }, 0).toFixed(2)}
+                    </p>
                   </div>
-                  <p style={{ fontWeight: 'bold', marginTop: '8px' }}>
-                    Total comprado para categoría {category}: ${comps.reduce((sum, c) => {
-                      const price = Number(c?.price);
-                      const available = Number(c?.available);
-                      if (!Number.isFinite(price) || !Number.isFinite(available)) return sum;
-                      return sum + (price * available);
-                    }, 0).toFixed(2)}
-                  </p>
                 </div>
-              ))}
+                );
+              })}
       </div>
       <br />
 

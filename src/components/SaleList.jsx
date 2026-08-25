@@ -1,9 +1,9 @@
 
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { computeSaleFinancials, normalizePayments, determinePaymentStatus, roundMoney } from '../utils/salePayments';
 import { buildProductMap, computeProductCostSummary } from '../utils/productCosting';
-import { getAllProducts } from '../services/productService';
+import { getAllProducts, getProductThumbnails } from '../services/productService';
 
 const paymentStatusColor = (status) => {
   if (status === 'Pendiente de Pago') return '#b91c1c';
@@ -12,11 +12,14 @@ const paymentStatusColor = (status) => {
 };
 
 const DEFAULT_SALE_QUANTITY = 1;
+const THUMBNAIL_BATCH_SIZE = 4;
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 25, 50, 100, 150, 200];
 
 const SaleList = () => {
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [lastDeletedSale, setLastDeletedSale] = useState(null);
+  const requestedThumbnailIdsRef = useRef(new Set());
 
   // Filtros
   const [search, setSearch] = useState('');
@@ -31,6 +34,7 @@ const SaleList = () => {
         getAllProducts()
       ]);
       if (resSales.ok) setSales(await resSales.json());
+      requestedThumbnailIdsRef.current.clear();
       setProducts(productsData);
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -48,6 +52,49 @@ const SaleList = () => {
   };
 
   const productMap = useMemo(() => buildProductMap(products), [products]);
+
+  const mergeProductThumbnails = useCallback((thumbnails = []) => {
+    const thumbnailMap = new Map(
+      thumbnails
+        .filter(item => item?.id && item?.image)
+        .map(item => [String(item.id), item])
+    );
+    if (!thumbnailMap.size) return;
+
+    setProducts(prevProducts => prevProducts.map(product => {
+      const thumbnail = thumbnailMap.get(String(product.id));
+      if (!thumbnail) return product;
+      return {
+        ...product,
+        image: thumbnail.image,
+        posX: thumbnail.posX ?? product.posX,
+        posY: thumbnail.posY ?? product.posY
+      };
+    }));
+  }, []);
+
+  const loadVisibleProductThumbnails = useCallback(async (visibleProducts = []) => {
+    const ids = [];
+    visibleProducts.forEach(product => {
+      if (!product?.id || product.image) return;
+      const id = String(product.id);
+      if (requestedThumbnailIdsRef.current.has(id)) return;
+      requestedThumbnailIdsRef.current.add(id);
+      ids.push(id);
+    });
+    if (!ids.length) return;
+
+    for (let index = 0; index < ids.length; index += THUMBNAIL_BATCH_SIZE) {
+      const batch = ids.slice(index, index + THUMBNAIL_BATCH_SIZE);
+      try {
+        const thumbnails = await getProductThumbnails(batch);
+        mergeProductThumbnails(thumbnails);
+      } catch (error) {
+        batch.forEach(id => requestedThumbnailIdsRef.current.delete(id));
+        console.error('Error fetching sale product thumbnails:', error);
+      }
+    }
+  }, [mergeProductThumbnails]);
 
   const joinedSales = useMemo(() => {
     return sales.map(s => ({
@@ -79,7 +126,7 @@ const SaleList = () => {
     });
   }, [enrichedSales, search, method, startDate, endDate]);
 
-  const [sortState, setSortState] = useState({ column: null, direction: 'default' });
+  const [sortState, setSortState] = useState({ column: 'date', direction: 'desc' });
   const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
   const [editingSale, setEditingSale] = useState(null);
@@ -88,13 +135,13 @@ const SaleList = () => {
   const [editDirty, setEditDirty] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  const resolveQuantity = (rawValue, fallbackValue = editingSale?.quantity) => {
+  const resolveQuantity = useCallback((rawValue, fallbackValue = editingSale?.quantity) => {
     const parsed = Number(rawValue);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
     const fallback = Number(fallbackValue);
     if (Number.isFinite(fallback) && fallback > 0) return fallback;
     return DEFAULT_SALE_QUANTITY;
-  };
+  }, [editingSale?.quantity]);
 
   const syncEditData = (updater) => {
     setEditData(prev => {
@@ -304,13 +351,12 @@ const SaleList = () => {
   const filteredRows = useMemo(() => filtered.map(getRowData), [filtered, getRowData]);
 
   const sortedRows = useMemo(() => {
-    if (!sortState.column || sortState.direction === 'default') {
-      return filteredRows;
-    }
-    const directionFactor = sortState.direction === 'asc' ? 1 : -1;
+    const column = sortState.column || 'date';
+    const direction = sortState.direction === 'default' ? 'desc' : sortState.direction;
+    const directionFactor = direction === 'asc' ? 1 : -1;
     return [...filteredRows].sort((a, b) => {
-      const aValueRaw = resolveSortValue(a, sortState.column);
-      const bValueRaw = resolveSortValue(b, sortState.column);
+      const aValueRaw = resolveSortValue(a, column);
+      const bValueRaw = resolveSortValue(b, column);
 
       if (typeof aValueRaw === 'string' || typeof bValueRaw === 'string') {
         const aValue = typeof aValueRaw === 'string' ? aValueRaw : '';
@@ -355,6 +401,10 @@ const SaleList = () => {
     const startIndex = (safePage - 1) * pageSize;
     return sortedRows.slice(startIndex, startIndex + pageSize);
   }, [sortedRows, safePage, pageSize]);
+
+  useEffect(() => {
+    loadVisibleProductThumbnails(displayedRows.map(row => row.sale.product).filter(Boolean));
+  }, [displayedRows, loadVisibleProductThumbnails]);
 
   const firstItemIndex = sortedRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
   const lastItemIndex = sortedRows.length === 0 ? 0 : firstItemIndex + displayedRows.length - 1;
@@ -592,7 +642,7 @@ const SaleList = () => {
       payments,
       paymentStatus
     };
-  }, [editData]);
+  }, [editData, editingSale?.financials?.effectiveSaleValue, editingSale?.total, resolveQuantity]);
 
   const saveEdit = async () => {
     if (!editingSale || !editData || !isEditValid) return;
@@ -658,10 +708,12 @@ const SaleList = () => {
     const sale = saleToDelete;
     if (!sale?.id) return;
     try {
-      const { financials, ...saleWithoutFinancials } = sale;
+      const saleWithoutRuntimeFields = { ...sale };
+      delete saleWithoutRuntimeFields.financials;
+      delete saleWithoutRuntimeFields.product;
       const res = await fetch(`/api/sales/${sale.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('No se pudo borrar la venta');
-      setLastDeletedSale({ sale: saleWithoutFinancials });
+      setLastDeletedSale({ sale: saleWithoutRuntimeFields });
       setSales(prev => prev.filter(s => s.id !== sale.id));
       if (editingSale && String(editingSale.id) === String(sale.id)) {
         closeEdit();
@@ -676,7 +728,9 @@ const SaleList = () => {
     if (!lastDeletedSale) return;
     try {
       const { sale } = lastDeletedSale;
-      const { product, financials, ...saleData } = sale;
+      const saleData = { ...sale };
+      delete saleData.product;
+      delete saleData.financials;
       let res = await fetch('/api/sales', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -723,10 +777,9 @@ const SaleList = () => {
         <input type="date" value={startDate} onChange={handleStartDateChange} style={{ padding: 8 }} />
         <input type="date" value={endDate} onChange={handleEndDateChange} style={{ padding: 8 }} />
         <select value={pageSize} onChange={handlePageSizeChange} style={{ padding: 8 }}>
-          <option value="5">5 filas</option>
-          <option value="10">10 filas</option>
-          <option value="20">20 filas</option>
-          <option value="50">50 filas</option>
+          {PAGE_SIZE_OPTIONS.map(option => (
+            <option key={option} value={option}>{option} filas</option>
+          ))}
         </select>
       </div>
 
@@ -1126,10 +1179,10 @@ const SaleList = () => {
 
       <div style={{ marginTop: 12 }}>
         <label style={{ marginRight: 8 }}>Mostrar:</label>
-        <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
-          <option value={10}>10</option>
-          <option value={25}>25</option>
-          <option value={50}>50</option>
+        <select value={pageSize} onChange={handlePageSizeChange}>
+          {PAGE_SIZE_OPTIONS.map(option => (
+            <option key={option} value={option}>{option}</option>
+          ))}
         </select>
         <span style={{ marginLeft: 8 }}>filas</span>
       </div>
